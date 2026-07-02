@@ -12,12 +12,35 @@ e outros dispositivos de entrada/saída da placa.
 
 ## Estado atual do projeto
 
-- `pula_plat.c` — **V1** do jogo, ainda sem sprites (personagem e plataformas são desenhados
-  como retângulos coloridos). É a base da lógica do jogo: física de pulo/gravidade, colisão
-  com plataformas, contagem de pontos e vidas.
+- `pula_plat.c` — **V1** do jogo. Física de pulo/gravidade, colisão com plataformas, contagem
+  de pontos e vidas. O personagem já usa um sprite (Kirby); as plataformas ainda são
+  retângulos coloridos.
+- `sprites/` — imagens de sprites baixadas e os headers `.h` já convertidos para uso no jogo.
+- `tools/png2c.py` — script que converte um PNG (ou um recorte dele) em um array C RGB565,
+  tratando cor(es) de fundo como transparência. Usado para gerar os arquivos em `sprites/*.h`.
 
 O jogo é compatível tanto com o **CPUlator** quanto com a **DE1-SoC** real, alternando por meio
 da flag de compilação `DE1_SOC` (ver seção "Como compilar").
+
+## Sprites: como adicionar novos
+
+As sprites usadas vêm de sprite sheets baixadas (ex: spriters-resource), que não têm canal
+alpha — o fundo é uma cor sólida. O fluxo para extrair um frame:
+
+1. Coloque a sprite sheet em `sprites/`.
+2. Descubra a posição (x, y, largura, altura) do frame desejado dentro da sheet.
+3. Gere o header C:
+   ```bash
+   python tools/png2c.py "sprites/sheet.png" --crop X,Y,W,H \
+       --bg R,G,B [--bg R2,G2,B2 ...] --nome nome_do_sprite > sprites/nome_do_sprite_sprite.h
+   ```
+   `--bg` pode ser passado mais de uma vez se a sheet tiver mais de um tom de fundo (ex: cor de
+   fundo da sheet e cor de destaque de célula).
+4. Inclua o header gerado em `pula_plat.c` e desenhe com `desenha_sprite(x, y, sprite, W, H, TRANSPARENT)`.
+
+Exemplo já pronto: `sprites/kirby_idle_sprite.h`, gerado a partir de
+`sprites/NES - Kirby's Adventure - Playable Characters - Kirby.png` e usado como sprite do
+personagem em `renderiza_cena()`.
 
 ## Como compilar
 

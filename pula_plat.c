@@ -21,6 +21,8 @@
 int fd;
 #endif
 
+#include "sprites/kirby_idle_sprite.h"
+
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
 #define HW_REGS_SPAN   0x00200000
@@ -118,6 +120,18 @@ void desenha_retangulo(int x, int y, int w, int h, uint16_t cor)
             plot_pixel(x + i, y + j, cor);
 }
 
+/* Desenha um sprite (array w x h de cores RGB565), pulando os pixels que
+ * combinam com a cor-chave de transparência. */
+void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h, uint16_t transparente)
+{
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            uint16_t cor = sprite[j * w + i];
+            if (cor != transparente)
+                plot_pixel(x + i, y + j, cor);
+        }
+}
+
 /* ---------------- Tabela de dígitos p/ display 7 seg ---------------- */
 const uint8_t seg[10] = {
     0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F
@@ -146,7 +160,7 @@ void gera_plataformas(void)
     plataformas[5] = (Plataforma){130, 60,  40, 6};   /* topo = objetivo */
 
     p.x = 150 << 8; p.y = 200 << 8; p.vy = 0;
-    p.w = 8; p.h = 8;
+    p.w = KIRBY_IDLE_W; p.h = KIRBY_IDLE_H;
     p.vidas = 3;
     p.pontos = 0;
 }
@@ -210,7 +224,8 @@ void renderiza_cena(void)
     for (int i = 0; i < N_PLAT; i++)
         desenha_retangulo(plataformas[i].x, plataformas[i].y,
                            plataformas[i].w, plataformas[i].h, GREEN);
-    desenha_retangulo(p.x >> 8, p.y >> 8, p.w, p.h, YELLOW);
+    desenha_sprite(p.x >> 8, p.y >> 8, (const uint16_t *)kirby_idle_sprite,
+                   KIRBY_IDLE_W, KIRBY_IDLE_H, KIRBY_IDLE_TRANSPARENT);
     atualiza_display(p.pontos);
 }
 
