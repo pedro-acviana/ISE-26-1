@@ -45,12 +45,27 @@ personagem em `renderiza_cena()`.
 ## Como compilar
 
 ```bash
-# Rodando no CPUlator
+# Rodando localmente (Linux) ou como base para a DE1-SoC
 gcc pula_plat.c -o jogo
 
 # Rodando na DE1-SoC (acesso direto a /dev/mem)
 gcc -DDE1_SOC pula_plat.c -o jogo
 ```
+
+### Rodando no CPUlator
+
+O CPUlator (https://cpulator.01xz.net) é um simulador no navegador que só aceita **um único
+arquivo `.c`**, sem suporte a múltiplos arquivos/pastas. Como o projeto agora usa
+`#include "sprites/kirby_idle_sprite.h"`, é preciso gerar uma versão com tudo inlinado antes
+de colar no CPUlator:
+
+```bash
+python tools/build_cpulator.py pula_plat.c > pula_plat_cpulator.c
+```
+
+Depois é só abrir `pula_plat_cpulator.c`, copiar todo o conteúdo e colar no editor do
+CPUlator. Esse arquivo gerado não deve ser editado diretamente — qualquer mudança deve ser
+feita em `pula_plat.c` e regerada com o script sempre que for testar no CPUlator.
 
 ## Como executar
 
