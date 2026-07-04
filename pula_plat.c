@@ -25,8 +25,7 @@ int fd;
 #endif
 
 #include "sprites/kirby_idle_sprite.h"
-#include "sprites/cloud1_sprite.h"
-#include "sprites/cloud1_meio_sprite.h"
+#include "sprites/ceu_nuvens_sprite.h"
 
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
@@ -48,7 +47,6 @@ int fd;
 #define BLUE   0x001F
 #define YELLOW 0xFFE0
 #define RED    0xF800
-#define CEU    0x24FE   /* azul de fundo, mesmo tom do sprite cloud1 */
 
 /* ---------------- Ponteiros globais ---------------- */
 volatile void     *peripherals;
@@ -170,36 +168,20 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h, uint16_t
         }
 }
 
-/* Desenha uma camada de nuvens repetida em grade (em x e em y), com a fase
- * vertical deslocada por uma fração de camera_y. fator_permil controla a
- * velocidade de rolagem da camada em relação à câmera (1000 = acompanha o
- * mundo por completo, valores menores = "mais distante", rola mais devagar
- * = efeito paralaxe). */
-void desenha_camada_nuvens(const uint16_t *sprite, int w, int h,
-                            uint16_t transparente, int fator_permil)
-{
-    int fase = (camera_y * fator_permil / 1000) % h;
-    if (fase < 0) fase += h;
-
-    for (int y = -h + fase; y < HEIGHT; y += h)
-        for (int x = -w; x < WIDTH; x += w)
-            desenha_sprite(x, y, sprite, w, h, transparente);
-}
-
-/* Desenha o fundo "infinito": céu (cor sólida) + duas camadas de nuvens em
- * paralaxe, a partir de 3 sprites pequenos que se repetem para sempre em vez
- * de uma imagem gigante. Rola junto com camera_y conforme o jogador sobe. */
+/* Desenha o fundo "infinito": um único sprite (céu + nuvens já combinados
+ * numa imagem só) repetido em grade por toda a tela, sem transparência - a
+ * imagem cobre o tile inteiro, então não sobra nenhum buraco entre eles.
+ * A fase vertical acompanha camera_y, então o padrão rola junto conforme o
+ * jogador sobe, em vez de ficar "grudado" na tela. */
 void desenha_fundo(void)
 {
-    desenha_retangulo(0, 0, WIDTH, HEIGHT, CEU);   /* camada 1: céu, parado (mais distante) */
+    int fase = camera_y % CEU_NUVENS_H;
+    if (fase < 0) fase += CEU_NUVENS_H;
 
-    desenha_camada_nuvens((const uint16_t *)cloud1_meio_sprite,
-                           CLOUD1_MEIO_W, CLOUD1_MEIO_H,
-                           CLOUD1_MEIO_TRANSPARENT, 400);  /* camada 3: nuvens ao fundo */
-
-    desenha_camada_nuvens((const uint16_t *)cloud1_sprite,
-                           CLOUD1_W, CLOUD1_H,
-                           CLOUD1_TRANSPARENT, 800);       /* camada 4: nuvens da frente */
+    for (int y = -CEU_NUVENS_H + fase; y < HEIGHT; y += CEU_NUVENS_H)
+        for (int x = -CEU_NUVENS_W; x < WIDTH; x += CEU_NUVENS_W)
+            desenha_sprite(x, y, (const uint16_t *)ceu_nuvens_sprite,
+                           CEU_NUVENS_W, CEU_NUVENS_H, CEU_NUVENS_TRANSPARENT);
 }
 
 /* ---------------- Tabela de dígitos p/ display 7 seg ---------------- */
