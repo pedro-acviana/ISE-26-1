@@ -192,9 +192,9 @@ void atualiza_estado(int esquerda, int direita, int pular)
         for (int i = 0; i < N_PLAT; i++) {
             Plataforma *pl = &plataformas[i];
             int px = p.x >> 8, py = p.y >> 8;
-            if (px + p.w/256 > pl->x && px < pl->x + pl->w &&
-                py + p.h/256 >= pl->y && py + p.h/256 <= pl->y + pl->h + 4) {
-                p.y = (pl->y - p.h/256) << 8;
+            if (px + p.w > pl->x && px < pl->x + pl->w &&
+                py + p.h >= pl->y && py + p.h <= pl->y + pl->h + 4) {
+                p.y = (pl->y - p.h) << 8;
                 p.vy = 0;
                 if (i == N_PLAT - 1) {
                     printf("Você chegou ao céu! Pontos: %d\n", p.pontos);
