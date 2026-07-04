@@ -2,9 +2,10 @@
  * Pula Plataformas - jogo de subir pulando entre plataformas até o "céu"
  * Funciona tanto no CPUlator quanto na DE1-SoC real.
  *
- * COMO COMPILAR:
- *   CPUlator:  gcc pula_plataformas.c -o jogo
- *   DE1-SoC:   gcc -DDE1_SOC pula_plataformas.c -o jogo
+ * COMO COMPILAR (precisa de -lm por causa do sqrt usado no gerador de
+ * plataformas):
+ *   CPUlator:  gcc pula_plataformas.c -o jogo -lm
+ *   DE1-SoC:   gcc -DDE1_SOC pula_plataformas.c -o jogo -lm
  *
  * COMO RODAR (na placa, precisa ser root):
  *   sudo ./jogo
@@ -14,6 +15,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
+#include <time.h>
 
 #ifdef DE1_SOC
 #include <fcntl.h>
@@ -51,6 +54,12 @@ volatile uint32_t *hex_ptr;
 volatile uint32_t *switch_ptr;
 volatile uint32_t *button_ptr;
 uint16_t (*tela)[LWIDTH];   /* buffer de vídeo */
+
+/* ---------------- Física do pulo ---------------- */
+/* valores em ponto fixo 24.8 (1 pixel = 256), por frame */
+#define GRAVIDADE 100   /* equivale a ~0.4px/frame^2 */
+#define VEL_PULO  (-1536) /* equivale a ~-6px/frame */
+#define VEL_LAT   512   /* equivale a ~2px/frame */
 
 /* ---------------- Estruturas do jogo ---------------- */
 #define N_PLAT 6
@@ -150,16 +159,83 @@ void atualiza_leds(int vidas)
 }
 
 /* ---------------- Lógica do jogo ---------------- */
+
+/* A colisão só é testada quando o jogador está caindo (p.vy > 0, ver
+ * atualiza_estado), ou seja ele sempre pousa numa plataforma na DESCIDA do
+ * pulo, depois de passar pelo ápice. Dado um desnível vertical dy_px (em
+ * pixels; positivo = plataforma mais alta que a atual), esta função calcula
+ * quantos pixels horizontais o jogador percorre até cruzar essa altura na
+ * descida - ou seja, o alcance horizontal máximo alcançável nesse pulo.
+ * Usada para gerar plataformas a distâncias compatíveis com a física do
+ * pulo (ver GRAVIDADE/VEL_PULO/VEL_LAT). */
+int alcance_horizontal(int dy_px)
+{
+    double v0 = -VEL_PULO;                       /* velocidade inicial do pulo (positiva) */
+    double alvo = -(double)dy_px * 256.0;         /* desnível em ponto fixo (y cresce p/ baixo) */
+    double delta = v0 * v0 + 2.0 * GRAVIDADE * alvo;
+
+    if (delta < 0) return 0;   /* mais alto do que o pulo consegue alcançar */
+
+    double t = (v0 + sqrt(delta)) / GRAVIDADE;    /* frames até cruzar a altura na descida */
+    double alcance = (VEL_LAT / 256.0) * t;
+
+    return (int)(alcance * 0.8);   /* margem de segurança */
+}
+
+#define N_PLAT_ALTURA_MIN 15  /* px - deve ficar bem abaixo do pulo máximo (~46px) */
+#define N_PLAT_ALTURA_MAX 40
+#define N_PLAT_LARGURA    40
+#define N_PLAT_MARGEM     10  /* px de margem lateral da tela */
+
+/* Sorteia a próxima plataforma a partir da "distância entre pontas": a
+ * distância horizontal entre a borda da plataforma anterior (na direção do
+ * salto) e a borda da nova plataforma mais próxima dela.
+ *
+ *  - Mínimo (mais fácil): sobreposição até a metade da plataforma anterior,
+ *    ou seja, a ponta da nova plataforma alinhada com o centro da de baixo
+ *    (gap = -largura_anterior/2, um valor negativo = sobreposição).
+ *  - Máximo (mais difícil): quase o alcance físico do pulo calculado por
+ *    alcance_horizontal(dy), que já embute uma margem de segurança.
+ *
+ * A direção (esquerda/direita) também é sorteada.
+ */
+void gera_plataforma_seguinte(Plataforma *anterior, Plataforma *nova, int dy)
+{
+    int dir = (rand() % 2) ? 1 : -1;
+
+    int gap_min = -(anterior->w / 2);
+    int gap_max = alcance_horizontal(dy);
+    if (gap_max < gap_min) gap_max = gap_min;
+
+    int gap = gap_min + rand() % (gap_max - gap_min + 1);
+
+    int novo_x;
+    if (dir > 0)
+        novo_x = anterior->x + anterior->w + gap;
+    else
+        novo_x = anterior->x - gap - N_PLAT_LARGURA;
+
+    if (novo_x < N_PLAT_MARGEM)
+        novo_x = N_PLAT_MARGEM;
+    if (novo_x > WIDTH - N_PLAT_LARGURA - N_PLAT_MARGEM)
+        novo_x = WIDTH - N_PLAT_LARGURA - N_PLAT_MARGEM;
+
+    *nova = (Plataforma){novo_x, anterior->y - dy, N_PLAT_LARGURA, 6};
+}
+
 void gera_plataformas(void)
 {
-    plataformas[0] = (Plataforma){140, 220, 40, 6};   /* chão */
-    plataformas[1] = (Plataforma){40,  190, 40, 6};
-    plataformas[2] = (Plataforma){220, 160, 40, 6};
-    plataformas[3] = (Plataforma){80,  130, 40, 6};
-    plataformas[4] = (Plataforma){220, 100, 40, 6};
-    plataformas[5] = (Plataforma){130, 60,  40, 6};   /* topo = objetivo */
+    plataformas[0] = (Plataforma){140, 220, N_PLAT_LARGURA, 6};   /* chão */
 
-    p.x = 150 << 8; p.y = 200 << 8; p.vy = 0;
+    for (int i = 1; i < N_PLAT; i++) {
+        int faixa = N_PLAT_ALTURA_MAX - N_PLAT_ALTURA_MIN + 1;
+        int dy = N_PLAT_ALTURA_MIN + rand() % faixa;
+        gera_plataforma_seguinte(&plataformas[i - 1], &plataformas[i], dy);
+    }
+
+    p.x = plataformas[0].x << 8;
+    p.y = (plataformas[0].y - KIRBY_IDLE_H) << 8;
+    p.vy = 0;
     p.w = KIRBY_IDLE_W; p.h = KIRBY_IDLE_H;
     p.vidas = 3;
     p.pontos = 0;
@@ -176,16 +252,12 @@ void ler_entrada(int *esquerda, int *direita, int *pular)
 
 void atualiza_estado(int esquerda, int direita, int pular)
 {
-    const int gravidade = 100;   /* equivale a ~0.4px/frame^2 */
-    const int vel_pulo  = -1536; /* equivale a ~-6px/frame */
-    const int vel_lat   = 512;   /* equivale a ~2px/frame */
+    if (esquerda) p.x -= VEL_LAT;
+    if (direita)  p.x += VEL_LAT;
 
-    if (esquerda) p.x -= vel_lat;
-    if (direita)  p.x += vel_lat;
+    if (pular && p.vy == 0) p.vy = VEL_PULO;
 
-    if (pular && p.vy == 0) p.vy = vel_pulo;
-
-    p.vy += gravidade;
+    p.vy += GRAVIDADE;
     p.y  += p.vy;
 
     if (p.vy > 0) {
@@ -232,6 +304,7 @@ void renderiza_cena(void)
 /* ---------------- main ---------------- */
 int main(void)
 {
+    srand((unsigned) time(NULL));
     init_io();
     gera_plataformas();
     atualiza_leds(p.vidas);
