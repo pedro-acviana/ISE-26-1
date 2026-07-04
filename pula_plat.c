@@ -25,6 +25,7 @@ int fd;
 #endif
 
 #include "sprites/kirby_idle_sprite.h"
+#include "sprites/cloud1_sprite.h"
 
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
@@ -46,6 +47,7 @@ int fd;
 #define BLUE   0x001F
 #define YELLOW 0xFFE0
 #define RED    0xF800
+#define CEU    0x24FE   /* azul de fundo, mesmo tom do sprite cloud1 */
 
 /* ---------------- Ponteiros globais ---------------- */
 volatile void     *peripherals;
@@ -139,6 +141,18 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h, uint16_t
             if (cor != transparente)
                 plot_pixel(x + i, y + j, cor);
         }
+}
+
+/* Desenha o céu e a nuvem cloud1 repetida em grade por toda a tela, criando
+ * um fundo "infinito" a partir de um único sprite pequeno. */
+void desenha_fundo(void)
+{
+    desenha_retangulo(0, 0, WIDTH, HEIGHT, CEU);
+
+    for (int y = -CLOUD1_H; y < HEIGHT; y += CLOUD1_H)
+        for (int x = -CLOUD1_W; x < WIDTH; x += CLOUD1_W)
+            desenha_sprite(x, y, (const uint16_t *)cloud1_sprite,
+                           CLOUD1_W, CLOUD1_H, CLOUD1_TRANSPARENT);
 }
 
 /* ---------------- Tabela de dígitos p/ display 7 seg ---------------- */
@@ -292,7 +306,7 @@ void atualiza_estado(int esquerda, int direita, int pular)
 }
 void renderiza_cena(void)
 {
-    limpa_tela();
+    desenha_fundo();
     for (int i = 0; i < N_PLAT; i++)
         desenha_retangulo(plataformas[i].x, plataformas[i].y,
                            plataformas[i].w, plataformas[i].h, GREEN);

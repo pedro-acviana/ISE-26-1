@@ -36,6 +36,7 @@ def main():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("arquivo", help="PNG de entrada")
     ap.add_argument("--crop", help="x,y,w,h -- recorta essa região antes de converter")
+    ap.add_argument("--resize", help="w,h -- redimensiona (depois do --crop) antes de converter")
     ap.add_argument("--bg", action="append",
                      help="r,g,b -- cor de fundo a ser tratada como transparente "
                           "(pode ser passado mais de uma vez, se houver mais de um tom de fundo)")
@@ -49,6 +50,10 @@ def main():
     if args.crop:
         x, y, w, h = parse_tupla(args.crop)
         img = img.crop((x, y, x + w, y + h))
+
+    if args.resize:
+        novo_w, novo_h = parse_tupla(args.resize)
+        img = img.resize((novo_w, novo_h), Image.LANCZOS)
 
     w, h = img.size
     nome = args.nome or args.arquivo.split("/")[-1].split("\\")[-1].rsplit(".", 1)[0]
@@ -69,7 +74,8 @@ def main():
         row = []
         for x in range(w):
             r, g, b, a = img.getpixel((x, y))
-            transparente = a == 0
+            # pixels bem translucidos (bordas suavizadas por --resize) tambem viram transparentes
+            transparente = a < 128
             if not transparente:
                 transparente = any(
                     abs(r - bg[0]) <= args.tolerancia and
