@@ -67,8 +67,8 @@ uint16_t back_buffer[HEIGHT][WIDTH];
 
 /* ---------------- Física do pulo ---------------- */
 /* valores em ponto fixo 24.8 (1 pixel = 256), por frame */
-#define GRAVIDADE 100   /* equivale a ~0.4px/frame^2 */
-#define VEL_PULO  (-1536) /* equivale a ~-6px/frame */
+#define GRAVIDADE 400   /* equivale a ~1.6px/frame^2 (pulo 2x mais rápido, mesma altura) */
+#define VEL_PULO  (-3072) /* equivale a ~-12px/frame (2x mais rápido, mesma altura) */
 #define VEL_LAT   512   /* equivale a ~2px/frame */
 
 /* ---------------- Câmera ---------------- */
