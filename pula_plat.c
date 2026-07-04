@@ -56,7 +56,13 @@ volatile uint32_t *led_ptr;
 volatile uint32_t *hex_ptr;
 volatile uint32_t *switch_ptr;
 volatile uint32_t *button_ptr;
-uint16_t (*tela)[LWIDTH];   /* buffer de vídeo */
+uint16_t (*tela)[LWIDTH];   /* memória de vídeo real (VGA) */
+
+/* Double buffering: tudo é desenhado nesse buffer comum (RAM), e só no fim
+ * do frame ele é copiado de uma vez para a memória de vídeo (atualiza_tela).
+ * Sem isso, cada plot_pixel apareceria na tela na hora, e dava pra ver o
+ * fundo/plataformas/personagem sendo desenhados em sequência (flicker). */
+uint16_t back_buffer[HEIGHT][WIDTH];
 
 /* ---------------- Física do pulo ---------------- */
 /* valores em ponto fixo 24.8 (1 pixel = 256), por frame */
@@ -125,14 +131,24 @@ void init_io(void)
 void plot_pixel(int x, int y, uint16_t cor)
 {
     if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return;
-    tela[y][x] = cor;
+    back_buffer[y][x] = cor;
 }
 
 void limpa_tela(void)
 {
     for (int y = 0; y < HEIGHT; y++)
         for (int x = 0; x < WIDTH; x++)
-            tela[y][x] = BLACK;
+            back_buffer[y][x] = BLACK;
+}
+
+/* Copia o back_buffer inteiro para a memória de vídeo de uma vez só. É o
+ * único lugar que escreve em `tela` - garante que a tela sempre mostra um
+ * frame completo e pronto, nunca um desenho pela metade. */
+void atualiza_tela(void)
+{
+    for (int y = 0; y < HEIGHT; y++)
+        for (int x = 0; x < WIDTH; x++)
+            tela[y][x] = back_buffer[y][x];
 }
 
 void desenha_retangulo(int x, int y, int w, int h, uint16_t cor)
@@ -387,6 +403,7 @@ void renderiza_cena(void)
     desenha_sprite(p.x >> 8, (p.y >> 8) - camera_y, (const uint16_t *)kirby_idle_sprite,
                    KIRBY_IDLE_W, KIRBY_IDLE_H, KIRBY_IDLE_TRANSPARENT);
     atualiza_display(p.pontos);
+    atualiza_tela();
 }
 
 /* ---------------- main ---------------- */
