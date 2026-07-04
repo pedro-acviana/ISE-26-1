@@ -26,6 +26,7 @@ int fd;
 
 #include "sprites/kirby_idle_sprite.h"
 #include "sprites/cloud1_sprite.h"
+#include "sprites/cloud1_meio_sprite.h"
 
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
@@ -63,8 +64,18 @@ uint16_t (*tela)[LWIDTH];   /* buffer de vídeo */
 #define VEL_PULO  (-1536) /* equivale a ~-6px/frame */
 #define VEL_LAT   512   /* equivale a ~2px/frame */
 
+/* ---------------- Câmera ---------------- */
+/* camera_y é a coordenada de mundo (em pixels) que aparece no topo da tela.
+ * Como o jogador só sobe (y de mundo diminui), a câmera nunca desce: ela só
+ * é reajustada quando o jogador cruza CAMERA_LIMIAR, empurrando o "mundo"
+ * (plataformas e fundo) para baixo na tela e dando a sensação de escalada
+ * contínua. Posição de tela = posição de mundo - camera_y. */
+#define CAMERA_LIMIAR (HEIGHT / 3)
+int camera_y = 0;
+
 /* ---------------- Estruturas do jogo ---------------- */
-#define N_PLAT 6
+#define N_PLAT 8
+#define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
 
 typedef struct {
     int x, y, w, h;
@@ -143,16 +154,36 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h, uint16_t
         }
 }
 
-/* Desenha o céu e a nuvem cloud1 repetida em grade por toda a tela, criando
- * um fundo "infinito" a partir de um único sprite pequeno. */
+/* Desenha uma camada de nuvens repetida em grade (em x e em y), com a fase
+ * vertical deslocada por uma fração de camera_y. fator_permil controla a
+ * velocidade de rolagem da camada em relação à câmera (1000 = acompanha o
+ * mundo por completo, valores menores = "mais distante", rola mais devagar
+ * = efeito paralaxe). */
+void desenha_camada_nuvens(const uint16_t *sprite, int w, int h,
+                            uint16_t transparente, int fator_permil)
+{
+    int fase = (camera_y * fator_permil / 1000) % h;
+    if (fase < 0) fase += h;
+
+    for (int y = -h + fase; y < HEIGHT; y += h)
+        for (int x = -w; x < WIDTH; x += w)
+            desenha_sprite(x, y, sprite, w, h, transparente);
+}
+
+/* Desenha o fundo "infinito": céu (cor sólida) + duas camadas de nuvens em
+ * paralaxe, a partir de 3 sprites pequenos que se repetem para sempre em vez
+ * de uma imagem gigante. Rola junto com camera_y conforme o jogador sobe. */
 void desenha_fundo(void)
 {
-    desenha_retangulo(0, 0, WIDTH, HEIGHT, CEU);
+    desenha_retangulo(0, 0, WIDTH, HEIGHT, CEU);   /* camada 1: céu, parado (mais distante) */
 
-    for (int y = -CLOUD1_H; y < HEIGHT; y += CLOUD1_H)
-        for (int x = -CLOUD1_W; x < WIDTH; x += CLOUD1_W)
-            desenha_sprite(x, y, (const uint16_t *)cloud1_sprite,
-                           CLOUD1_W, CLOUD1_H, CLOUD1_TRANSPARENT);
+    desenha_camada_nuvens((const uint16_t *)cloud1_meio_sprite,
+                           CLOUD1_MEIO_W, CLOUD1_MEIO_H,
+                           CLOUD1_MEIO_TRANSPARENT, 400);  /* camada 3: nuvens ao fundo */
+
+    desenha_camada_nuvens((const uint16_t *)cloud1_sprite,
+                           CLOUD1_W, CLOUD1_H,
+                           CLOUD1_TRANSPARENT, 800);       /* camada 4: nuvens da frente */
 }
 
 /* ---------------- Tabela de dígitos p/ display 7 seg ---------------- */
@@ -237,15 +268,18 @@ void gera_plataforma_seguinte(Plataforma *anterior, Plataforma *nova, int dy)
     *nova = (Plataforma){novo_x, anterior->y - dy, N_PLAT_LARGURA, 6};
 }
 
+int sorteia_dy(void)
+{
+    int faixa = N_PLAT_ALTURA_MAX - N_PLAT_ALTURA_MIN + 1;
+    return N_PLAT_ALTURA_MIN + rand() % faixa;
+}
+
 void gera_plataformas(void)
 {
-    plataformas[0] = (Plataforma){140, 220, N_PLAT_LARGURA, 6};   /* chão */
+    plataformas[0] = (Plataforma){140, CHAO_Y, N_PLAT_LARGURA, 6};   /* chão */
 
-    for (int i = 1; i < N_PLAT; i++) {
-        int faixa = N_PLAT_ALTURA_MAX - N_PLAT_ALTURA_MIN + 1;
-        int dy = N_PLAT_ALTURA_MIN + rand() % faixa;
-        gera_plataforma_seguinte(&plataformas[i - 1], &plataformas[i], dy);
-    }
+    for (int i = 1; i < N_PLAT; i++)
+        gera_plataforma_seguinte(&plataformas[i - 1], &plataformas[i], sorteia_dy());
 
     p.x = plataformas[0].x << 8;
     p.y = (plataformas[0].y - KIRBY_IDLE_H) << 8;
@@ -253,6 +287,32 @@ void gera_plataformas(void)
     p.w = KIRBY_IDLE_W; p.h = KIRBY_IDLE_H;
     p.vidas = 3;
     p.pontos = 0;
+    camera_y = 0;
+}
+
+/* Retorna a plataforma mais alta (menor y de mundo) atualmente ativa, usada
+ * como referência para encaixar a próxima plataforma gerada acima dela. */
+Plataforma *plataforma_mais_alta(void)
+{
+    Plataforma *melhor = &plataformas[0];
+    for (int i = 1; i < N_PLAT; i++)
+        if (plataformas[i].y < melhor->y)
+            melhor = &plataformas[i];
+    return melhor;
+}
+
+/* Qualquer plataforma que já saiu de tela por baixo (rolou para fora da
+ * câmera) é reaproveitada: vira uma plataforma nova, gerada acima da mais
+ * alta que existir no momento. É assim que a escalada fica infinita sem
+ * precisar de um array sem limite de plataformas. */
+void recicla_plataformas(void)
+{
+    for (int i = 0; i < N_PLAT; i++) {
+        if (plataformas[i].y - camera_y > HEIGHT + N_PLAT_ALTURA_MAX) {
+            Plataforma *topo = plataforma_mais_alta();
+            gera_plataforma_seguinte(topo, &plataformas[i], sorteia_dy());
+        }
+    }
 }
 
 void ler_entrada(int *esquerda, int *direita, int *pular)
@@ -282,22 +342,36 @@ void atualiza_estado(int esquerda, int direita, int pular)
                 py + p.h >= pl->y && py + p.h <= pl->y + pl->h + 4) {
                 p.y = (pl->y - p.h) << 8;
                 p.vy = 0;
-                if (i == N_PLAT - 1) {
-                    printf("Você chegou ao céu! Pontos: %d\n", p.pontos);
-                    jogo_rodando = 0;
-                }
             }
         }
     }
 
-    if ((p.y >> 8) > HEIGHT) {
+    /* pontuação = altura recorde alcançada (em mundo), 10px por ponto */
+    int altura = CHAO_Y - (p.y >> 8);
+    if (altura / 10 > p.pontos)
+        p.pontos = altura / 10;
+
+    /* câmera só sobe: se o jogador passou do limiar perto do topo da tela,
+     * empurra a câmera pra cima, o que visualmente empurra o mundo (fundo e
+     * plataformas) pra baixo - sensação de escalada contínua. */
+    int py_tela = (p.y >> 8) - camera_y;
+    if (py_tela < CAMERA_LIMIAR)
+        camera_y = (p.y >> 8) - CAMERA_LIMIAR;
+
+    recicla_plataformas();
+
+    if ((p.y >> 8) - camera_y > HEIGHT) {
         p.vidas--;
         atualiza_leds(p.vidas);
         if (p.vidas <= 0) {
             printf("Fim de jogo. Pontos: %d\n", p.pontos);
             jogo_rodando = 0;
         } else {
-            p.x = 150 << 8; p.y = 200 << 8; p.vy = 0;
+            /* reaparece bem no limiar da câmera, não no topo, senão o
+             * reajuste de câmera do próximo frame o empurraria de novo */
+            p.x = (WIDTH / 2 - p.w / 2) << 8;
+            p.y = (camera_y + CAMERA_LIMIAR) << 8;
+            p.vy = 0;
         }
     }
 
@@ -308,9 +382,9 @@ void renderiza_cena(void)
 {
     desenha_fundo();
     for (int i = 0; i < N_PLAT; i++)
-        desenha_retangulo(plataformas[i].x, plataformas[i].y,
+        desenha_retangulo(plataformas[i].x, plataformas[i].y - camera_y,
                            plataformas[i].w, plataformas[i].h, GREEN);
-    desenha_sprite(p.x >> 8, p.y >> 8, (const uint16_t *)kirby_idle_sprite,
+    desenha_sprite(p.x >> 8, (p.y >> 8) - camera_y, (const uint16_t *)kirby_idle_sprite,
                    KIRBY_IDLE_W, KIRBY_IDLE_H, KIRBY_IDLE_TRANSPARENT);
     atualiza_display(p.pontos);
 }
