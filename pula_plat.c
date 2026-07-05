@@ -29,6 +29,7 @@ int fd;
 #include "sprites/kirby_caindo_reto_sprite.h"
 #include "sprites/kirby_caindo_diagonal_sprite.h"
 #include "sprites/ceu_nuvens_sprite.h"
+#include "sprites/plataforma_gelo_sprite.h"
 
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
@@ -46,7 +47,6 @@ int fd;
 /* Cores RGB565 */
 #define BLACK  0x0000
 #define WHITE  0xFFFF
-#define GREEN  0x07E0
 #define BLUE   0x001F
 #define YELLOW 0xFFE0
 #define RED    0xF800
@@ -417,8 +417,10 @@ void renderiza_cena(int esquerda, int direita, int parado_antes)
 
     desenha_fundo();
     for (int i = 0; i < N_PLAT; i++)
-        desenha_retangulo(plataformas[i].x, plataformas[i].y - camera_y,
-                           plataformas[i].w, plataformas[i].h, GREEN);
+        desenha_sprite(plataformas[i].x, plataformas[i].y - camera_y,
+                        (const uint16_t *)plataforma_gelo_sprite,
+                        PLATAFORMA_GELO_W, PLATAFORMA_GELO_H,
+                        PLATAFORMA_GELO_TRANSPARENT, 0);
     desenha_sprite(p.x >> 8, (p.y >> 8) - camera_y, sprite, sw, sh, transp, direcao_h < 0);
     atualiza_display(p.pontos);
     atualiza_tela();
