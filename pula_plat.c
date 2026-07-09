@@ -709,13 +709,14 @@ void recicla_plataformas(void)
 }
 
 /* ---------------- Derretimento das plataformas ---------------- */
-/* Dificuldade extra: toda plataforma dura só PLAT_VIDA_FRAMES (9s) desde que
- * foi gerada. A cada PLAT_ESTAGIO_FRAMES (3s) ela passa a usar um sprite de
- * "derretendo" menor (1 -> 2 -> 3), dando cada vez menos espaço pra pousar,
- * até sumir de vez e ser reaproveitada (mesmo mecanismo de recicla_plataformas
- * acima, então o jogador some com o chão embaixo dele se demorar demais). */
-#define PLAT_ESTAGIO_FRAMES (FPS_ESTIMADO * 3)
-#define PLAT_VIDA_FRAMES    (FPS_ESTIMADO * 9)
+/* Dificuldade extra: toda plataforma dura só PLAT_VIDA_FRAMES (12s) desde que
+ * foi gerada, dividida em 3 estágios iguais (4s cada). A cada estágio ela
+ * passa a usar um sprite de "derretendo" menor (1 -> 2 -> 3), dando cada vez
+ * menos espaço pra pousar, até sumir de vez e ser reaproveitada (mesmo
+ * mecanismo de recicla_plataformas acima, então o jogador some com o chão
+ * embaixo dele se demorar demais). */
+#define PLAT_VIDA_FRAMES    (FPS_ESTIMADO * 12)
+#define PLAT_ESTAGIO_FRAMES (PLAT_VIDA_FRAMES / 3)
 
 void plataforma_visual(const Plataforma *pl, const uint16_t **sprite,
                         int *sw, int *sh, uint16_t *transp)
