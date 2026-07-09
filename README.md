@@ -39,6 +39,10 @@ alpha — o fundo é uma cor sólida. O fluxo para extrair um frame:
    fundo da sheet e cor de destaque de célula).
 4. Inclua o header gerado em `pula_plat.c` e desenhe com `desenha_sprite(x, y, sprite, W, H, TRANSPARENT)`.
 
+Para fundos full-screen (telas de início/game over) com proporção diferente de 320x240, use
+`--letterbox 320,240` em vez de `--resize`: ele redimensiona preservando a proporção original da
+imagem e preenche as sobras com preto, em vez de esticar/distorcer.
+
 Exemplo já pronto: `sprites/kirby_idle_sprite.h`, gerado a partir de
 `sprites/NES - Kirby's Adventure - Playable Characters - Kirby.png` e usado como sprite do
 personagem em `renderiza_cena()`.
@@ -125,7 +129,10 @@ sudo ./jogo
 - **Botão 1**: move o personagem para a esquerda
 - **Chave 0**: faz o personagem pular
 - **Botão 2**: segura pra entrar em postura de parry — se o projétil do vilão atingir o Kirby
-  nesse instante, ele é refletido de volta e acerta o vilão
+  nesse instante, ele é refletido de volta. Enquanto o parry está segurado, o Kirby para no
+  lugar e os botões 0/1 escolhem a direção da devolução (reto, diagonal p/ direita ou p/
+  esquerda) em vez de mover o personagem — uma seta vermelha acima do Kirby mostra a direção
+  escolhida em tempo real
 - Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu"), desviando
   (ou refletindo) os ataques do vilão-nave que patrulha o topo da tela
 - A cada 10 plataformas geradas o céu muda de nível (até 8 níveis, depois repete o último)

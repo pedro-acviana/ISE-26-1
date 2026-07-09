@@ -13,6 +13,12 @@ Uso:
     python png2c.py sprites/sheet.png --crop 6,49,14,21 --bg 84,110,140 \
         --nome kirby_idle > kirby_idle_sprite.h
 
+    # imagem de fundo full-screen com proporção diferente da tela (320x240) --
+    # redimensiona preservando o aspect ratio e preenche as sobras com preto
+    # (letterbox), em vez de esticar/distorcer
+    python png2c.py sprites/fundo.png --letterbox 320,240 \
+        --nome tela_inicio > tela_inicio_sprite.h
+
 Pixels transparentes (alpha == 0, ou que combinem com --bg dentro da
 tolerância) viram a cor-chave TRANSPARENT_COLOR (magenta, 0xF81F), que deve
 ser ignorada ao desenhar o sprite.
@@ -36,7 +42,11 @@ def main():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("arquivo", help="PNG de entrada")
     ap.add_argument("--crop", help="x,y,w,h -- recorta essa região antes de converter")
-    ap.add_argument("--resize", help="w,h -- redimensiona (depois do --crop) antes de converter")
+    ap.add_argument("--resize", help="w,h -- redimensiona (depois do --crop) antes de converter, "
+                                      "distorcendo a imagem se a proporção for diferente")
+    ap.add_argument("--letterbox", help="w,h -- redimensiona preservando a proporção original "
+                                         "(depois do --crop) e preenche as sobras com preto, "
+                                         "em vez de distorcer; usado p/ fundos full-screen")
     ap.add_argument("--bg", action="append",
                      help="r,g,b -- cor de fundo a ser tratada como transparente "
                           "(pode ser passado mais de uma vez, se houver mais de um tom de fundo)")
@@ -54,6 +64,15 @@ def main():
     if args.resize:
         novo_w, novo_h = parse_tupla(args.resize)
         img = img.resize((novo_w, novo_h), Image.LANCZOS)
+
+    if args.letterbox:
+        cx, cy = parse_tupla(args.letterbox)
+        escala = min(cx / img.width, cy / img.height)
+        novo_w, novo_h = round(img.width * escala), round(img.height * escala)
+        redimensionada = img.resize((novo_w, novo_h), Image.LANCZOS)
+        canvas = Image.new("RGBA", (cx, cy), (0, 0, 0, 255))
+        canvas.alpha_composite(redimensionada, ((cx - novo_w) // 2, (cy - novo_h) // 2))
+        img = canvas
 
     w, h = img.size
     nome = args.nome or args.arquivo.split("/")[-1].split("\\")[-1].rsplit(".", 1)[0]

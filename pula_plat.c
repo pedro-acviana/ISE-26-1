@@ -286,23 +286,6 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h,
         }
 }
 
-/* Igual a desenha_sprite, mas dobra cada pixel num bloco 2x2. Usado pros
- * fundos de tela de início/game over, que são gerados em 160x120 (metade da
- * tela) pra não inflar demais o .h gerado - aqui viram 320x240 de novo, sem
- * distorcer proporção. */
-void desenha_sprite_2x(int x, int y, const uint16_t *sprite, int w, int h)
-{
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++) {
-            uint16_t cor = sprite[j * w + i];
-            int dx = x + i * 2, dy = y + j * 2;
-            plot_pixel(dx,     dy,     cor);
-            plot_pixel(dx + 1, dy,     cor);
-            plot_pixel(dx,     dy + 1, cor);
-            plot_pixel(dx + 1, dy + 1, cor);
-        }
-}
-
 /* Um sprite de céu por nível de altitude (nivel_nuvem 1..8), trocado a cada
  * 10 gerações de plataforma (ver gera_plataforma_seguinte). O último nível
  * fica valendo pra sempre depois disso. */
@@ -504,10 +487,17 @@ void atualiza_vilao(void)
     }
 }
 
+/* Ângulo de devolução do parry (ver atualiza_projetil): reflexo reto pra
+ * cima por padrão, ou na diagonal escolhida seguando botão 0/1 (mira_dir/
+ * mira_esq) no instante em que o projétil toca o Kirby. */
+#define MIRA_DIAGONAL 0.70710678   /* sen/cos de 45 graus */
+
 /* Move o projétil ativo e resolve colisão: contra o Kirby enquanto vai na
  * ida (refletido == 0), contra o vilão depois de refletido pelo parry. Sair
- * da tela em qualquer direção também desativa o projétil. */
-void atualiza_projetil(int parry)
+ * da tela em qualquer direção também desativa o projétil.
+ * mira_esq/mira_dir = botão 1/0 segurados junto com o parry, escolhendo pra
+ * que lado devolver o projétil (ver desenha_seta_mira). */
+void atualiza_projetil(int parry, int mira_esq, int mira_dir)
 {
     if (!projetil.ativo) return;
 
@@ -528,8 +518,16 @@ void atualiza_projetil(int parry)
         if (colide && kirby_hit_timer <= 0) {
             if (parry) {
                 projetil.refletido = 1;
-                projetil.vx = -projetil.vx;
-                projetil.vy = -projetil.vy;
+                if (mira_dir && !mira_esq) {
+                    projetil.vx = (int)(PROJETIL_VEL * MIRA_DIAGONAL);
+                    projetil.vy = (int)(-PROJETIL_VEL * MIRA_DIAGONAL);
+                } else if (mira_esq && !mira_dir) {
+                    projetil.vx = (int)(-PROJETIL_VEL * MIRA_DIAGONAL);
+                    projetil.vy = (int)(-PROJETIL_VEL * MIRA_DIAGONAL);
+                } else {
+                    projetil.vx = 0;
+                    projetil.vy = (int)(-PROJETIL_VEL);
+                }
             } else {
                 p.vidas--;
                 atualiza_leds(p.vidas);
@@ -585,6 +583,24 @@ void desenha_projetil(void)
     desenha_sprite(projetil.x >> 8, projetil.y >> 8,
                     (const uint16_t *)projetil_vilao_sprite,
                     PROJETIL_VILAO_W, PROJETIL_VILAO_H, PROJETIL_VILAO_TRANSPARENT, 0);
+}
+
+/* Seta vermelha mostrada durante o parry, indicando a direção (esquerda/
+ * reto/direita, conforme botão 1/0 segurado junto) escolhida pra devolver o
+ * projétil do vilão - ver mira_esq/mira_dir em atualiza_projetil. Desenhada
+ * "à mão" (triângulo via plot_pixel) pra não precisar de um sprite novo. */
+void desenha_seta_mira(int mira_esq, int mira_dir)
+{
+    int dir = (mira_dir && !mira_esq) ? 1 : (mira_esq && !mira_dir ? -1 : 0);
+    int cx = (p.x >> 8) + p.w / 2;
+    int cy = (p.y >> 8) - camera_y - 6;
+
+    for (int i = 0; i <= 8; i++) {
+        int ponta_x = cx + dir * 6 * i / 8;
+        int meia_largura = 3 * (8 - i) / 8;
+        for (int x = ponta_x - meia_largura; x <= ponta_x + meia_largura; x++)
+            plot_pixel(x, cy - i, RED);
+    }
 }
 
 void gera_plataformas(void)
@@ -737,8 +753,12 @@ void desenha_kirby(const uint16_t *sprite, int sw, int sh, uint16_t transp, int 
  * Prioridade (maior pra menor): atordoado (atingido) > vilão explodindo
  * (campeão) > parry segurado > parado (respirando, alterna 2 sprites) >
  * subindo > caindo reto/diagonal.
+ *
+ * mira_esq/mira_dir: só usados durante o parry (ver atualiza_projetil e
+ * desenha_seta_mira), pra mostrar a seta de direção de devolução do tiro.
  */
-void renderiza_cena(int esquerda, int direita, int parado_antes, int parry)
+void renderiza_cena(int esquerda, int direita, int parado_antes, int parry,
+                     int mira_esq, int mira_dir)
 {
     if (esquerda) direcao_h = -1;
     else if (direita) direcao_h = 1;
@@ -782,6 +802,7 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry)
     desenha_vilao();
     desenha_projetil();
     desenha_kirby(sprite, sw, sh, transp, direcao_h < 0);
+    if (parry) desenha_seta_mira(mira_esq, mira_dir);
     atualiza_display(p.pontos);
     atualiza_tela();
 }
@@ -790,12 +811,14 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry)
 #define INTRO_FRAME1 (FPS_ESTIMADO * 1)
 #define INTRO_FRAME2 (FPS_ESTIMADO * 1)
 
-/* Fundo (160x120, desenhado em 2x pra preencher os 320x240) com os 4 kirbys
- * da pasta de sprites: 1 e 2 aparecem uma vez cada, depois alterna 3/4 pra
- * sempre - efeito de "acordando" seguido de uma respiração contínua. */
+/* Fundo (320x240, resolução nativa da tela, com letterbox preto onde a
+ * imagem original não preenche 4:3 - ver --letterbox em tools/png2c.py) com
+ * os 4 kirbys da pasta de sprites: 1 e 2 aparecem uma vez cada, depois
+ * alterna 3/4 pra sempre - efeito de "acordando" seguido de respiração. */
 void renderiza_tela_inicio(void)
 {
-    desenha_sprite_2x(0, 0, (const uint16_t *)tela_inicio_sprite, TELA_INICIO_W, TELA_INICIO_H);
+    desenha_sprite(0, 0, (const uint16_t *)tela_inicio_sprite, TELA_INICIO_W, TELA_INICIO_H,
+                    TELA_INICIO_TRANSPARENT, 0);
 
     const uint16_t *sprite; int sw, sh; uint16_t transp;
     if (frame_intro < INTRO_FRAME1) {
@@ -822,7 +845,8 @@ void renderiza_tela_inicio(void)
  * pra reforçar visualmente o motivo do fim de jogo. */
 void renderiza_tela_game_over(void)
 {
-    desenha_sprite_2x(0, 0, (const uint16_t *)tela_game_over_sprite, TELA_GAME_OVER_W, TELA_GAME_OVER_H);
+    desenha_sprite(0, 0, (const uint16_t *)tela_game_over_sprite, TELA_GAME_OVER_W, TELA_GAME_OVER_H,
+                    TELA_GAME_OVER_TRANSPARENT, 0);
     desenha_sprite(WIDTH - KIRBY_ATINGIDO_W - 8, HEIGHT - KIRBY_ATINGIDO_H - 4,
                    (const uint16_t *)kirby_atingido_sprite,
                    KIRBY_ATINGIDO_W, KIRBY_ATINGIDO_H, KIRBY_ATINGIDO_TRANSPARENT, 0);
@@ -858,12 +882,16 @@ int main(void)
                 kirby_hit_timer--;
                 esquerda = direita = pular = 0;
             }
-            atualiza_estado(esquerda, direita, pular);
+            /* durante o parry, botão 1/0 não move o Kirby - escolhem a
+             * direção de devolução do projétil (ver desenha_seta_mira) */
+            int mov_esquerda = parry ? 0 : esquerda;
+            int mov_direita  = parry ? 0 : direita;
+            atualiza_estado(mov_esquerda, mov_direita, pular);
             atualiza_vilao();
-            atualiza_projetil(parry);
+            atualiza_projetil(parry, esquerda, direita);
             if (estado_jogo == ESTADO_GAME_OVER)
                 break;
-            renderiza_cena(esquerda, direita, parado_antes, parry);
+            renderiza_cena(mov_esquerda, mov_direita, parado_antes, parry, esquerda, direita);
             break;
         }
 
