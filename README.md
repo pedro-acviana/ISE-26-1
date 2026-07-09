@@ -12,9 +12,10 @@ e outros dispositivos de entrada/saída da placa.
 
 ## Estado atual do projeto
 
-- `pula_plat.c` — **V1** do jogo. Física de pulo/gravidade, colisão com plataformas, contagem
-  de pontos e vidas. O personagem já usa um sprite (Kirby); as plataformas ainda são
-  retângulos coloridos.
+- `pula_plat.c` — física de pulo/gravidade, colisão com plataformas, contagem de pontos e
+  vidas (3), telas de início e game over, e um vilão-nave que patrulha o topo da tela
+  atirando projéteis no Kirby (com mecânica de parry). O personagem já usa sprites (Kirby); as
+  plataformas usam um sprite de gelo.
 - `sprites/` — imagens de sprites baixadas e os headers `.h` já convertidos para uso no jogo.
 - `tools/png2c.py` — script que converte um PNG (ou um recorte dele) em um array C RGB565,
   tratando cor(es) de fundo como transparência. Usado para gerar os arquivos em `sprites/*.h`.
@@ -52,6 +53,35 @@ gcc pula_plat.c -o jogo
 gcc -DDE1_SOC pula_plat.c -o jogo
 ```
 
+### Rodando no Windows via MSYS2 (SDL2)
+
+O jogo acessa endereços de memória fixos (VGA, LEDs, etc.) que só existem dentro do
+CPUlator ou da DE1-SoC real — nem compilar com `-DDE1_SOC` funciona fora de Linux
+(`/dev/mem` não existe no Windows), e sem essa flag o programa tentaria ler/escrever
+em endereços inválidos e travaria. Por isso existe o modo `SDL_SIM`, que troca a
+VGA por uma janela SDL2 e os switches/botões pelo teclado, sem mudar a lógica do jogo.
+
+1. Abra o terminal **"MSYS2 MinGW 64-bit"** (não o "MSYS2 MSYS" genérico — esse aqui
+   gera binários nativos do Windows).
+2. Instale o compilador e a SDL2:
+   ```bash
+   pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2
+   ```
+3. Compile:
+   ```bash
+   gcc -DSDL_SIM pula_plat.c -o jogo.exe -lSDL2 -lm
+   ```
+4. Rode (de dentro do mesmo terminal MinGW 64-bit, que já tem o `SDL2.dll` no PATH):
+   ```bash
+   ./jogo.exe
+   ```
+   Se quiser rodar `jogo.exe` fora desse terminal (ex: dando duplo-clique no Explorer),
+   copie `C:\msys64\mingw64\bin\SDL2.dll` pra mesma pasta do `jogo.exe` antes.
+
+Controles no modo SDL: setas ou WASD (esquerda/direita), espaço ou seta pra cima
+(pular), shift (parry). Pontos e vidas aparecem no título da janela (sem display de
+7 segmentos/LEDs de verdade).
+
 ### Rodando no CPUlator
 
 O CPUlator (https://cpulator.01xz.net) é um simulador no navegador que só aceita **um único
@@ -84,28 +114,41 @@ sudo ./jogo
 | Vídeo VGA (obrigatório) | Renderização do cenário, plataformas e personagem         | ✅ |
 | Displays de 7 segmentos (obrigatório) | Exibição da pontuação                       | ✅ |
 | LEDs                    | Exibição do número de vidas restantes                     | ✅ |
-| Chaves (SW)             | Comando de pulo                                            | ✅ |
-| Botões (KEY)            | Movimento horizontal (esquerda/direita)                    | ✅ |
+| Chaves (SW)             | Chave 0 = pulo                                             | ✅ |
+| Botões (KEY)            | Botões 0/1 = movimento horizontal, botão 2 = parry (reflete o projétil do vilão); também usados nas telas de início/game over | ✅ |
 | Teclado USB / Mouse / Acelerômetro / PS2 Joystick | —                              | ⬜ não implementado ainda |
 
-## Como jogar (V1)
+## Como jogar
 
+- **Tela de início**: botão 0 inicia o jogo
 - **Botão 0**: move o personagem para a direita
 - **Botão 1**: move o personagem para a esquerda
 - **Chave 0**: faz o personagem pular
-- Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu")
-- Cair da tela custa uma vida; ao perder todas as vidas, o jogo termina
-- A pontuação é exibida nos displays de 7 segmentos e o número de vidas nos LEDs
+- **Botão 2**: segura pra entrar em postura de parry — se o projétil do vilão atingir o Kirby
+  nesse instante, ele é refletido de volta e acerta o vilão
+- Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu"), desviando
+  (ou refletindo) os ataques do vilão-nave que patrulha o topo da tela
+- A cada 10 plataformas geradas o céu muda de nível (até 8 níveis, depois repete o último)
+- Levar um tiro custa uma vida e deixa o Kirby atordoado por 2s; cair da tela também custa uma
+  vida; ao perder as 3 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0
+  sai)
+- O vilão tem 3 vidas; ao perdê-las todas, explode, some pelo resto da partida e o Kirby comemora
+- A pontuação é exibida nos displays de 7 segmentos e o número de vidas do Kirby nos LEDs
 
 ## Laço principal do jogo
 
-O jogo segue a estrutura clássica de laço de jogo, implementada na função `main`:
+O jogo segue a estrutura clássica de laço de jogo, implementada na função `main`, com um
+pequeno estado de tela por cima (início / jogando / game over):
 
 ```c
-while (jogo_rodando) {
-    ler_entrada(&esquerda, &direita, &pular);
-    atualiza_estado(esquerda, direita, pular);
-    renderiza_cena();
+while (programa_rodando) {
+    ler_entrada(&esquerda, &direita, &pular, &parry);
+    switch (estado_jogo) {
+    case ESTADO_INICIO:    renderiza_tela_inicio(); /* botão 0 -> ESTADO_JOGANDO */ break;
+    case ESTADO_JOGANDO:   atualiza_estado(...); atualiza_vilao(); atualiza_projetil(parry);
+                           renderiza_cena(...); break;
+    case ESTADO_GAME_OVER: renderiza_tela_game_over(); /* botão 1 retry, botão 0 sai */ break;
+    }
 }
 ```
 

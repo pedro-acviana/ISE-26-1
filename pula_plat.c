@@ -1,11 +1,13 @@
 /*
  * Pula Plataformas - jogo de subir pulando entre plataformas até o "céu"
- * Funciona tanto no CPUlator quanto na DE1-SoC real.
+ * Funciona no CPUlator, na DE1-SoC real, ou localmente via SDL2 (p/ testar
+ * no PC, ex. MSYS2 no Windows, sem precisar da placa).
  *
  * COMO COMPILAR (precisa de -lm por causa do sqrt usado no gerador de
- * plataformas):
+ * plataformas e na mira do projétil do vilão):
  *   CPUlator:  gcc pula_plataformas.c -o jogo -lm
  *   DE1-SoC:   gcc -DDE1_SOC pula_plataformas.c -o jogo -lm
+ *   SDL (PC):  gcc -DSDL_SIM pula_plataformas.c -o jogo -lSDL2 -lm
  *
  * COMO RODAR (na placa, precisa ser root):
  *   sudo ./jogo
@@ -24,12 +26,45 @@
 int fd;
 #endif
 
+#ifdef SDL_SIM
+#define SDL_MAIN_HANDLED   /* mantém nosso int main(void) em vez do main(argc,argv) do SDL */
+#include <SDL2/SDL.h>
+SDL_Window   *sdl_window;
+SDL_Renderer *sdl_renderer;
+SDL_Texture  *sdl_texture;
+/* backing "registradores" simulados: os ponteiros de periférico apontam pra
+ * cá em vez de endereços de hardware, então atualiza_leds/atualiza_display
+ * continuam funcionando sem precisar mudar essas funções. */
+static uint32_t sdl_led_reg, sdl_hex_reg, sdl_switch_reg, sdl_button_reg;
+#endif
+
 #include "sprites/kirby_idle_sprite.h"
 #include "sprites/kirby_neutro_sprite.h"
+#include "sprites/kirby_parado2_sprite.h"
 #include "sprites/kirby_caindo_reto_sprite.h"
 #include "sprites/kirby_caindo_diagonal_sprite.h"
+#include "sprites/kirby_atingido_sprite.h"
+#include "sprites/kirby_campeao_sprite.h"
+#include "sprites/kirby_parry_sprite.h"
+#include "sprites/kirby_inicial1_sprite.h"
+#include "sprites/kirby_inicial2_sprite.h"
+#include "sprites/kirby_inicial3_sprite.h"
+#include "sprites/kirby_inicial4_sprite.h"
+#include "sprites/vilao_parado_sprite.h"
+#include "sprites/vilao_atingido_sprite.h"
+#include "sprites/vilao_explodido_sprite.h"
+#include "sprites/projetil_vilao_sprite.h"
 #include "sprites/ceu_nuvens_sprite.h"
+#include "sprites/cloud_bg2_sprite.h"
+#include "sprites/cloud_bg3_sprite.h"
+#include "sprites/cloud_bg4_sprite.h"
+#include "sprites/cloud_bg5_sprite.h"
+#include "sprites/cloud_bg6_sprite.h"
+#include "sprites/cloud_bg7_sprite.h"
+#include "sprites/cloud_bg8_sprite.h"
 #include "sprites/plataforma_gelo_sprite.h"
+#include "sprites/tela_inicio_sprite.h"
+#include "sprites/tela_game_over_sprite.h"
 
 /* ---------------- Endereços dos periféricos ---------------- */
 #define HW_REGS_BASE   0xFF200000
@@ -80,6 +115,14 @@ uint16_t back_buffer[HEIGHT][WIDTH];
 #define CAMERA_LIMIAR (HEIGHT / 3)
 int camera_y = 0;
 
+/* ---------------- Temporizadores (em frames) ---------------- */
+/* O loop principal não tem delay fixo (roda na velocidade do CPUlator/placa),
+ * então "frames" aqui é só uma referência de duração aproximada, no mesmo
+ * espírito dos outros ajustes de física do arquivo (GRAVIDADE, VEL_PULO...). */
+#define FPS_ESTIMADO     30
+#define FRAMES_2S        (FPS_ESTIMADO * 2)   /* duração dos estados de "atingido"/"explodindo" */
+#define IDLE_ANIM_FRAMES 20                    /* velocidade da respiração/alternância parado */
+
 /* ---------------- Estruturas do jogo ---------------- */
 #define N_PLAT 8
 #define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
@@ -96,15 +139,70 @@ typedef struct {
     int   pontos;
 } Player;
 
+typedef enum { ESTADO_INICIO, ESTADO_JOGANDO, ESTADO_GAME_OVER } EstadoJogo;
+
+typedef enum { VILAO_NORMAL, VILAO_ATINGIDO, VILAO_EXPLODINDO, VILAO_MORTO } EstadoVilao;
+
+/* O vilão voa em coordenadas de tela (não de mundo): fica sempre no topo da
+ * tela, imune ao scroll da câmera, só ricocheteando nas bordas laterais. */
+typedef struct {
+    int x;
+    int dir;             /* 1 = direita, -1 = esquerda */
+    int vidas;
+    int cooldown_tiro;
+    EstadoVilao estado;
+    int timer;            /* frames restantes em ATINGIDO/EXPLODINDO */
+} Vilao;
+
+/* Posição/velocidade em ponto fixo 24.8, pra mirar o Kirby em linha reta
+ * mesmo na diagonal. */
+typedef struct {
+    int ativo;
+    int refletido;   /* 0 = indo pro Kirby, 1 = voltando pro vilão (pós-parry) */
+    int x, y;
+    int vx, vy;
+} Projetil;
+
 Plataforma plataformas[N_PLAT];
 Player p;
-int jogo_rodando = 1;
 int direcao_h = 1;   /* 1 = olhando p/ direita, -1 = p/ esquerda (última direção andada) */
+
+EstadoJogo estado_jogo = ESTADO_INICIO;
+int programa_rodando = 1;
+
+Vilao vilao;
+Projetil projetil;
+int kirby_hit_timer = 0;     /* >0 = Kirby atordoado mostrando kirby_atingido, sem controle */
+int idle_anim_timer = 0;     /* frames parado seguidos, pra alternar os sprites de respiração */
+int contador_plataformas = 0;
+int nivel_nuvem = 1;         /* 1..8: sobe a cada 10 gerações de plataforma */
+int frame_intro = 0;         /* animação dos kirbys na tela de início */
 
 /* ---------------- Inicialização de hardware ---------------- */
 void init_io(void)
 {
-#ifdef DE1_SOC
+#ifdef SDL_SIM
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        printf("Erro no SDL_Init: %s\n", SDL_GetError());
+        exit(1);
+    }
+    /* janela em 2x pra não ficar minúscula num monitor moderno */
+    sdl_window = SDL_CreateWindow("Pula Plataformas",
+                                   SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                   WIDTH * 2, HEIGHT * 2, SDL_WINDOW_SHOWN);
+    sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_ACCELERATED);
+    sdl_texture  = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565,
+                                      SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+    if (!sdl_window || !sdl_renderer || !sdl_texture) {
+        printf("Erro ao criar janela/renderer/textura SDL: %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    led_ptr    = &sdl_led_reg;
+    hex_ptr    = &sdl_hex_reg;
+    switch_ptr = &sdl_switch_reg;
+    button_ptr = &sdl_button_reg;
+#elif defined(DE1_SOC)
     fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd == -1) { printf("Erro ao abrir /dev/mem\n"); exit(1); }
 
@@ -117,16 +215,21 @@ void init_io(void)
                           MAP_SHARED, fd, VGA_BASE);
     if (vga_mem == MAP_FAILED) { printf("Erro no mmap VGA\n"); exit(1); }
     tela = (uint16_t (*)[LWIDTH]) vga_mem;
-#else
-    /* No CPUlator os endereços já são acessíveis diretamente */
-    peripherals = (void *)HW_REGS_BASE;
-    tela = (uint16_t (*)[LWIDTH]) VGA_BASE;
-#endif
 
     led_ptr    = (uint32_t *)(peripherals + LED_OFFSET);
     hex_ptr    = (uint32_t *)(peripherals + HEX_LOW_OFFSET);
     switch_ptr = (uint32_t *)(peripherals + SWITCH_OFFSET);
     button_ptr = (uint32_t *)(peripherals + BUTTON_OFFSET);
+#else
+    /* No CPUlator os endereços já são acessíveis diretamente */
+    peripherals = (void *)HW_REGS_BASE;
+    tela = (uint16_t (*)[LWIDTH]) VGA_BASE;
+
+    led_ptr    = (uint32_t *)(peripherals + LED_OFFSET);
+    hex_ptr    = (uint32_t *)(peripherals + HEX_LOW_OFFSET);
+    switch_ptr = (uint32_t *)(peripherals + SWITCH_OFFSET);
+    button_ptr = (uint32_t *)(peripherals + BUTTON_OFFSET);
+#endif
 }
 
 /* ---------------- Funções de desenho ---------------- */
@@ -148,9 +251,16 @@ void limpa_tela(void)
  * frame completo e pronto, nunca um desenho pela metade. */
 void atualiza_tela(void)
 {
+#ifdef SDL_SIM
+    SDL_UpdateTexture(sdl_texture, NULL, back_buffer, WIDTH * sizeof(uint16_t));
+    SDL_RenderClear(sdl_renderer);
+    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, NULL);
+    SDL_RenderPresent(sdl_renderer);
+#else
     for (int y = 0; y < HEIGHT; y++)
         for (int x = 0; x < WIDTH; x++)
             tela[y][x] = back_buffer[y][x];
+#endif
 }
 
 void desenha_retangulo(int x, int y, int w, int h, uint16_t cor)
@@ -176,6 +286,37 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h,
         }
 }
 
+/* Igual a desenha_sprite, mas dobra cada pixel num bloco 2x2. Usado pros
+ * fundos de tela de início/game over, que são gerados em 160x120 (metade da
+ * tela) pra não inflar demais o .h gerado - aqui viram 320x240 de novo, sem
+ * distorcer proporção. */
+void desenha_sprite_2x(int x, int y, const uint16_t *sprite, int w, int h)
+{
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            uint16_t cor = sprite[j * w + i];
+            int dx = x + i * 2, dy = y + j * 2;
+            plot_pixel(dx,     dy,     cor);
+            plot_pixel(dx + 1, dy,     cor);
+            plot_pixel(dx,     dy + 1, cor);
+            plot_pixel(dx + 1, dy + 1, cor);
+        }
+}
+
+/* Um sprite de céu por nível de altitude (nivel_nuvem 1..8), trocado a cada
+ * 10 gerações de plataforma (ver gera_plataforma_seguinte). O último nível
+ * fica valendo pra sempre depois disso. */
+static const uint16_t *const ceu_niveis[8] = {
+    (const uint16_t *)ceu_nuvens_sprite,
+    (const uint16_t *)cloud_bg2_sprite,
+    (const uint16_t *)cloud_bg3_sprite,
+    (const uint16_t *)cloud_bg4_sprite,
+    (const uint16_t *)cloud_bg5_sprite,
+    (const uint16_t *)cloud_bg6_sprite,
+    (const uint16_t *)cloud_bg7_sprite,
+    (const uint16_t *)cloud_bg8_sprite,
+};
+
 /* Desenha o fundo "infinito": um único sprite (céu + nuvens já combinados
  * numa imagem só) repetido em grade por toda a tela, sem transparência - a
  * imagem cobre o tile inteiro, então não sobra nenhum buraco entre eles.
@@ -183,13 +324,13 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h,
  * jogador sobe, em vez de ficar "grudado" na tela. */
 void desenha_fundo(void)
 {
+    const uint16_t *ceu = ceu_niveis[nivel_nuvem - 1];
     int fase = camera_y % CEU_NUVENS_H;
     if (fase < 0) fase += CEU_NUVENS_H;
 
     for (int y = -CEU_NUVENS_H + fase; y < HEIGHT; y += CEU_NUVENS_H)
         for (int x = -CEU_NUVENS_W; x < WIDTH; x += CEU_NUVENS_W)
-            desenha_sprite(x, y, (const uint16_t *)ceu_nuvens_sprite,
-                           CEU_NUVENS_W, CEU_NUVENS_H, CEU_NUVENS_TRANSPARENT, 0);
+            desenha_sprite(x, y, ceu, CEU_NUVENS_W, CEU_NUVENS_H, CEU_NUVENS_TRANSPARENT, 0);
 }
 
 /* ---------------- Tabela de dígitos p/ display 7 seg ---------------- */
@@ -199,9 +340,16 @@ const uint8_t seg[10] = {
 
 void atualiza_display(int pontos)
 {
+#ifdef SDL_SIM
+    /* sem display de 7 seg de verdade: mostra pontos/vidas no título da janela */
+    char titulo[64];
+    snprintf(titulo, sizeof(titulo), "Pula Plataformas - Pontos: %d  Vidas: %d", pontos, p.vidas);
+    SDL_SetWindowTitle(sdl_window, titulo);
+#else
     int dez = (pontos / 10) % 10;
     int uni = pontos % 10;
     *hex_ptr = seg[dez] << 8 | seg[uni];
+#endif
 }
 
 void atualiza_leds(int vidas)
@@ -272,6 +420,12 @@ void gera_plataforma_seguinte(Plataforma *anterior, Plataforma *nova, int dy)
         novo_x = WIDTH - N_PLAT_LARGURA - N_PLAT_MARGEM;
 
     *nova = (Plataforma){novo_x, anterior->y - dy, N_PLAT_LARGURA, 6};
+
+    /* a cada 10 gerações, sobe um nível de céu (ver ceu_niveis); satura no
+     * último nível em vez de voltar ao início. */
+    contador_plataformas++;
+    nivel_nuvem = 1 + contador_plataformas / 10;
+    if (nivel_nuvem > 8) nivel_nuvem = 8;
 }
 
 int sorteia_dy(void)
@@ -280,8 +434,164 @@ int sorteia_dy(void)
     return N_PLAT_ALTURA_MIN + rand() % faixa;
 }
 
+/* ---------------- Vilão e projétil ---------------- */
+#define VILAO_Y             14   /* posição fixa no topo da tela (coordenada de tela, não de mundo) */
+#define VILAO_VEL_PX        1
+#define VILAO_COOLDOWN_TIRO (FPS_ESTIMADO * 3)
+#define PROJETIL_VEL        384.0   /* ponto fixo 24.8 -> ~1.5px/frame */
+
+void reseta_vilao(void)
+{
+    vilao.x = WIDTH / 2 - VILAO_PARADO_W / 2;
+    vilao.dir = 1;
+    vilao.vidas = 3;
+    vilao.cooldown_tiro = VILAO_COOLDOWN_TIRO;
+    vilao.estado = VILAO_NORMAL;
+    vilao.timer = 0;
+    projetil.ativo = 0;
+}
+
+/* Mira no Kirby no instante do disparo (vetor normalizado * velocidade
+ * fixa); depois disso o projétil só anda em linha reta, sem re-mirar. */
+void dispara_projetil(void)
+{
+    int origem_x = vilao.x + VILAO_PARADO_W / 2;
+    int origem_y = VILAO_Y + VILAO_PARADO_H;
+    double alvo_x = (p.x >> 8) + p.w / 2.0;
+    double alvo_y = ((p.y >> 8) - camera_y) + p.h / 2.0;
+    double dx = alvo_x - origem_x;
+    double dy = alvo_y - origem_y;
+    double dist = sqrt(dx * dx + dy * dy);
+    if (dist < 1.0) dist = 1.0;
+
+    projetil.ativo = 1;
+    projetil.refletido = 0;
+    projetil.x = origem_x << 8;
+    projetil.y = origem_y << 8;
+    projetil.vx = (int)(dx / dist * PROJETIL_VEL);
+    projetil.vy = (int)(dy / dist * PROJETIL_VEL);
+}
+
+/* Nave inimiga: patrulha lateralmente no topo da tela e atira periodicamente.
+ * Enquanto ATINGIDO/EXPLODINDO fica parada mostrando o sprite do estado até
+ * o timer zerar; depois de EXPLODINDO ela morre de vez (MORTO), derrotada
+ * pelo resto da partida. */
+void atualiza_vilao(void)
+{
+    if (vilao.estado == VILAO_MORTO) return;
+
+    if (vilao.estado == VILAO_ATINGIDO) {
+        if (--vilao.timer <= 0)
+            vilao.estado = (vilao.vidas > 0) ? VILAO_NORMAL : VILAO_EXPLODINDO;
+        if (vilao.estado == VILAO_EXPLODINDO)
+            vilao.timer = FRAMES_2S;
+        return;
+    }
+
+    if (vilao.estado == VILAO_EXPLODINDO) {
+        if (--vilao.timer <= 0)
+            vilao.estado = VILAO_MORTO;
+        return;
+    }
+
+    vilao.x += vilao.dir * VILAO_VEL_PX;
+    if (vilao.x < N_PLAT_MARGEM) { vilao.x = N_PLAT_MARGEM; vilao.dir = 1; }
+    if (vilao.x > WIDTH - VILAO_PARADO_W - N_PLAT_MARGEM) { vilao.x = WIDTH - VILAO_PARADO_W - N_PLAT_MARGEM; vilao.dir = -1; }
+
+    if (!projetil.ativo && --vilao.cooldown_tiro <= 0) {
+        dispara_projetil();
+        vilao.cooldown_tiro = VILAO_COOLDOWN_TIRO;
+    }
+}
+
+/* Move o projétil ativo e resolve colisão: contra o Kirby enquanto vai na
+ * ida (refletido == 0), contra o vilão depois de refletido pelo parry. Sair
+ * da tela em qualquer direção também desativa o projétil. */
+void atualiza_projetil(int parry)
+{
+    if (!projetil.ativo) return;
+
+    projetil.x += projetil.vx;
+    projetil.y += projetil.vy;
+
+    int px = projetil.x >> 8, py = projetil.y >> 8;
+    if (px < -PROJETIL_VILAO_W || px > WIDTH ||
+        py < -PROJETIL_VILAO_H || py > HEIGHT) {
+        projetil.ativo = 0;
+        return;
+    }
+
+    if (!projetil.refletido) {
+        int kx = p.x >> 8, ky = (p.y >> 8) - camera_y;
+        int colide = px + PROJETIL_VILAO_W > kx && px < kx + p.w &&
+                     py + PROJETIL_VILAO_H > ky && py < ky + p.h;
+        if (colide && kirby_hit_timer <= 0) {
+            if (parry) {
+                projetil.refletido = 1;
+                projetil.vx = -projetil.vx;
+                projetil.vy = -projetil.vy;
+            } else {
+                p.vidas--;
+                atualiza_leds(p.vidas);
+                kirby_hit_timer = FRAMES_2S;
+                projetil.ativo = 0;
+                if (p.vidas <= 0) {
+                    printf("Fim de jogo. Pontos: %d\n", p.pontos);
+                    estado_jogo = ESTADO_GAME_OVER;
+                }
+            }
+        }
+    } else if (vilao.estado == VILAO_NORMAL) {
+        int colide = px + PROJETIL_VILAO_W > vilao.x && px < vilao.x + VILAO_PARADO_W &&
+                     py + PROJETIL_VILAO_H > VILAO_Y && py < VILAO_Y + VILAO_PARADO_H;
+        if (colide) {
+            vilao.vidas--;
+            vilao.estado = VILAO_ATINGIDO;
+            vilao.timer = FRAMES_2S;
+            projetil.ativo = 0;
+        }
+    }
+}
+
+void desenha_vilao(void)
+{
+    const uint16_t *sprite; int sw, sh; uint16_t transp;
+
+    switch (vilao.estado) {
+    case VILAO_MORTO:
+        return;
+    case VILAO_ATINGIDO:
+        sprite = (const uint16_t *)vilao_atingido_sprite;
+        sw = VILAO_ATINGIDO_W; sh = VILAO_ATINGIDO_H; transp = VILAO_ATINGIDO_TRANSPARENT;
+        break;
+    case VILAO_EXPLODINDO:
+        sprite = (const uint16_t *)vilao_explodido_sprite;
+        sw = VILAO_EXPLODIDO_W; sh = VILAO_EXPLODIDO_H; transp = VILAO_EXPLODIDO_TRANSPARENT;
+        break;
+    default:
+        sprite = (const uint16_t *)vilao_parado_sprite;
+        sw = VILAO_PARADO_W; sh = VILAO_PARADO_H; transp = VILAO_PARADO_TRANSPARENT;
+        break;
+    }
+
+    int cx = vilao.x + VILAO_PARADO_W / 2;
+    int cy = VILAO_Y + VILAO_PARADO_H / 2;
+    desenha_sprite(cx - sw / 2, cy - sh / 2, sprite, sw, sh, transp, vilao.dir < 0);
+}
+
+void desenha_projetil(void)
+{
+    if (!projetil.ativo) return;
+    desenha_sprite(projetil.x >> 8, projetil.y >> 8,
+                    (const uint16_t *)projetil_vilao_sprite,
+                    PROJETIL_VILAO_W, PROJETIL_VILAO_H, PROJETIL_VILAO_TRANSPARENT, 0);
+}
+
 void gera_plataformas(void)
 {
+    contador_plataformas = 0;
+    nivel_nuvem = 1;
+
     plataformas[0] = (Plataforma){140, CHAO_Y, N_PLAT_LARGURA, 6};   /* chão */
 
     for (int i = 1; i < N_PLAT; i++)
@@ -294,6 +604,10 @@ void gera_plataformas(void)
     p.vidas = 3;
     p.pontos = 0;
     camera_y = 0;
+
+    kirby_hit_timer = 0;
+    idle_anim_timer = 0;
+    reseta_vilao();
 }
 
 /* Retorna a plataforma mais alta (menor y de mundo) atualmente ativa, usada
@@ -321,13 +635,26 @@ void recicla_plataformas(void)
     }
 }
 
-void ler_entrada(int *esquerda, int *direita, int *pular)
+void ler_entrada(int *esquerda, int *direita, int *pular, int *parry)
 {
+#ifdef SDL_SIM
+    SDL_Event e;
+    while (SDL_PollEvent(&e))
+        if (e.type == SDL_QUIT) programa_rodando = 0;
+
+    const uint8_t *tecla = SDL_GetKeyboardState(NULL);
+    *esquerda = tecla[SDL_SCANCODE_LEFT]  || tecla[SDL_SCANCODE_A];   /* botão 1 */
+    *direita  = tecla[SDL_SCANCODE_RIGHT] || tecla[SDL_SCANCODE_D];   /* botão 0 */
+    *pular    = tecla[SDL_SCANCODE_SPACE] || tecla[SDL_SCANCODE_UP];  /* chave 0 */
+    *parry    = tecla[SDL_SCANCODE_LSHIFT] || tecla[SDL_SCANCODE_RSHIFT]; /* botão 2 */
+#else
     uint32_t sw = *switch_ptr;
     uint32_t bt = *button_ptr;
     *esquerda = bt & 0x2;    /* botão 1 */
     *direita  = bt & 0x1;    /* botão 0 */
     *pular    = sw & 0x1;    /* chave 0 */
+    *parry    = bt & 0x4;    /* botão 2 - segurar p/ postura de parry */
+#endif
 }
 
 void atualiza_estado(int esquerda, int direita, int pular)
@@ -371,7 +698,7 @@ void atualiza_estado(int esquerda, int direita, int pular)
         atualiza_leds(p.vidas);
         if (p.vidas <= 0) {
             printf("Fim de jogo. Pontos: %d\n", p.pontos);
-            jogo_rodando = 0;
+            estado_jogo = ESTADO_GAME_OVER;
         } else {
             /* reaparece bem no limiar da câmera, não no topo, senão o
              * reajuste de câmera do próximo frame o empurraria de novo */
@@ -383,27 +710,58 @@ void atualiza_estado(int esquerda, int direita, int pular)
 
     if (p.x < 0) p.x = 0;
     if ((p.x >> 8) > WIDTH - p.w) p.x = (WIDTH - p.w) << 8;
+
+    /* respiração do Kirby parado: reinicia sempre que ele sai do chão, pra
+     * alternância dos dois sprites (ver renderiza_cena) recomeçar do zero a
+     * cada novo pulo. */
+    if (p.vy == 0) idle_anim_timer++;
+    else idle_anim_timer = 0;
 }
+
+/* Desenha o sprite do Kirby ancorado no centro-base do seu hitbox (p.x/p.y,
+ * p.w/p.h), em vez do canto superior esquerdo direto - assim sprites de
+ * tamanho bem diferente (atingido, campeão, parry) não "saltam" de posição
+ * quando substituem o sprite normal. */
+void desenha_kirby(const uint16_t *sprite, int sw, int sh, uint16_t transp, int espelhado)
+{
+    int base_x = (p.x >> 8) + p.w / 2 - sw / 2;
+    int base_y = (p.y >> 8) - camera_y + p.h - sh;
+    desenha_sprite(base_x, base_y, sprite, sw, sh, transp, espelhado);
+}
+
 /* Escolhe o sprite do Kirby de acordo com o estado do frame ANTERIOR à
  * atualização de física (parado_antes vem de antes de atualiza_estado
  * rodar) e o vy já atualizado (subindo/caindo). Direção esquerda/direita só
- * espelha o mesmo desenho, não precisa de arte separada por lado:
+ * espelha o mesmo desenho, não precisa de arte separada por lado.
  *
- *  - parado                        -> kirby_neutro
- *  - subindo (reto ou na diagonal) -> kirby_idle (o sprite original)
- *  - caindo reto (sem direção)     -> kirby_caindo_reto
- *  - caindo na diagonal            -> kirby_caindo_diagonal
+ * Prioridade (maior pra menor): atordoado (atingido) > vilão explodindo
+ * (campeão) > parry segurado > parado (respirando, alterna 2 sprites) >
+ * subindo > caindo reto/diagonal.
  */
-void renderiza_cena(int esquerda, int direita, int parado_antes)
+void renderiza_cena(int esquerda, int direita, int parado_antes, int parry)
 {
     if (esquerda) direcao_h = -1;
     else if (direita) direcao_h = 1;
 
     const uint16_t *sprite; int sw, sh; uint16_t transp;
 
-    if (parado_antes) {
-        sprite = (const uint16_t *)kirby_neutro_sprite;
-        sw = KIRBY_NEUTRO_W; sh = KIRBY_NEUTRO_H; transp = KIRBY_NEUTRO_TRANSPARENT;
+    if (kirby_hit_timer > 0) {
+        sprite = (const uint16_t *)kirby_atingido_sprite;
+        sw = KIRBY_ATINGIDO_W; sh = KIRBY_ATINGIDO_H; transp = KIRBY_ATINGIDO_TRANSPARENT;
+    } else if (vilao.estado == VILAO_EXPLODINDO) {
+        sprite = (const uint16_t *)kirby_campeao_sprite;
+        sw = KIRBY_CAMPEAO_W; sh = KIRBY_CAMPEAO_H; transp = KIRBY_CAMPEAO_TRANSPARENT;
+    } else if (parry) {
+        sprite = (const uint16_t *)kirby_parry_sprite;
+        sw = KIRBY_PARRY_W; sh = KIRBY_PARRY_H; transp = KIRBY_PARRY_TRANSPARENT;
+    } else if (parado_antes) {
+        if ((idle_anim_timer / IDLE_ANIM_FRAMES) % 2 == 0) {
+            sprite = (const uint16_t *)kirby_neutro_sprite;
+            sw = KIRBY_NEUTRO_W; sh = KIRBY_NEUTRO_H; transp = KIRBY_NEUTRO_TRANSPARENT;
+        } else {
+            sprite = (const uint16_t *)kirby_parado2_sprite;
+            sw = KIRBY_PARADO2_W; sh = KIRBY_PARADO2_H; transp = KIRBY_PARADO2_TRANSPARENT;
+        }
     } else if (p.vy < 0) {
         sprite = (const uint16_t *)kirby_idle_sprite;
         sw = KIRBY_IDLE_W; sh = KIRBY_IDLE_H; transp = KIRBY_IDLE_TRANSPARENT;
@@ -421,8 +779,53 @@ void renderiza_cena(int esquerda, int direita, int parado_antes)
                         (const uint16_t *)plataforma_gelo_sprite,
                         PLATAFORMA_GELO_W, PLATAFORMA_GELO_H,
                         PLATAFORMA_GELO_TRANSPARENT, 0);
-    desenha_sprite(p.x >> 8, (p.y >> 8) - camera_y, sprite, sw, sh, transp, direcao_h < 0);
+    desenha_vilao();
+    desenha_projetil();
+    desenha_kirby(sprite, sw, sh, transp, direcao_h < 0);
     atualiza_display(p.pontos);
+    atualiza_tela();
+}
+
+/* ---------------- Telas de início / game over ---------------- */
+#define INTRO_FRAME1 (FPS_ESTIMADO * 1)
+#define INTRO_FRAME2 (FPS_ESTIMADO * 1)
+
+/* Fundo (160x120, desenhado em 2x pra preencher os 320x240) com os 4 kirbys
+ * da pasta de sprites: 1 e 2 aparecem uma vez cada, depois alterna 3/4 pra
+ * sempre - efeito de "acordando" seguido de uma respiração contínua. */
+void renderiza_tela_inicio(void)
+{
+    desenha_sprite_2x(0, 0, (const uint16_t *)tela_inicio_sprite, TELA_INICIO_W, TELA_INICIO_H);
+
+    const uint16_t *sprite; int sw, sh; uint16_t transp;
+    if (frame_intro < INTRO_FRAME1) {
+        sprite = (const uint16_t *)kirby_inicial1_sprite;
+        sw = KIRBY_INICIAL1_W; sh = KIRBY_INICIAL1_H; transp = KIRBY_INICIAL1_TRANSPARENT;
+    } else if (frame_intro < INTRO_FRAME1 + INTRO_FRAME2) {
+        sprite = (const uint16_t *)kirby_inicial2_sprite;
+        sw = KIRBY_INICIAL2_W; sh = KIRBY_INICIAL2_H; transp = KIRBY_INICIAL2_TRANSPARENT;
+    } else if (((frame_intro - INTRO_FRAME1 - INTRO_FRAME2) / IDLE_ANIM_FRAMES) % 2 == 0) {
+        sprite = (const uint16_t *)kirby_inicial3_sprite;
+        sw = KIRBY_INICIAL3_W; sh = KIRBY_INICIAL3_H; transp = KIRBY_INICIAL3_TRANSPARENT;
+    } else {
+        sprite = (const uint16_t *)kirby_inicial4_sprite;
+        sw = KIRBY_INICIAL4_W; sh = KIRBY_INICIAL4_H; transp = KIRBY_INICIAL4_TRANSPARENT;
+    }
+    frame_intro++;
+
+    desenha_sprite(WIDTH / 2 - sw / 2, HEIGHT / 2 - sh / 2, sprite, sw, sh, transp, 0);
+    atualiza_tela();
+}
+
+/* Fundo de game over já traz as instruções ("botão 1 tentar de novo, botão 0
+ * sair") desenhadas na própria imagem; só soma o kirby_atingido num canto
+ * pra reforçar visualmente o motivo do fim de jogo. */
+void renderiza_tela_game_over(void)
+{
+    desenha_sprite_2x(0, 0, (const uint16_t *)tela_game_over_sprite, TELA_GAME_OVER_W, TELA_GAME_OVER_H);
+    desenha_sprite(WIDTH - KIRBY_ATINGIDO_W - 8, HEIGHT - KIRBY_ATINGIDO_H - 4,
+                   (const uint16_t *)kirby_atingido_sprite,
+                   KIRBY_ATINGIDO_W, KIRBY_ATINGIDO_H, KIRBY_ATINGIDO_TRANSPARENT, 0);
     atualiza_tela();
 }
 
@@ -431,18 +834,65 @@ int main(void)
 {
     srand((unsigned) time(NULL));
     init_io();
-    gera_plataformas();
-    atualiza_leds(p.vidas);
 
-    while (jogo_rodando) {
-        int esquerda, direita, pular;
-        ler_entrada(&esquerda, &direita, &pular);
-        int parado_antes = (p.vy == 0);
-        atualiza_estado(esquerda, direita, pular);
-        renderiza_cena(esquerda, direita, parado_antes);
+    while (programa_rodando) {
+#ifdef SDL_SIM
+        Uint32 frame_inicio = SDL_GetTicks();
+#endif
+        int esquerda, direita, pular, parry;
+        ler_entrada(&esquerda, &direita, &pular, &parry);
+
+        switch (estado_jogo) {
+        case ESTADO_INICIO:
+            renderiza_tela_inicio();
+            if (direita) {   /* botão 0 = iniciar */
+                gera_plataformas();
+                atualiza_leds(p.vidas);
+                estado_jogo = ESTADO_JOGANDO;
+            }
+            break;
+
+        case ESTADO_JOGANDO: {
+            int parado_antes = (p.vy == 0);
+            if (kirby_hit_timer > 0) {
+                kirby_hit_timer--;
+                esquerda = direita = pular = 0;
+            }
+            atualiza_estado(esquerda, direita, pular);
+            atualiza_vilao();
+            atualiza_projetil(parry);
+            if (estado_jogo == ESTADO_GAME_OVER)
+                break;
+            renderiza_cena(esquerda, direita, parado_antes, parry);
+            break;
+        }
+
+        case ESTADO_GAME_OVER:
+            renderiza_tela_game_over();
+            if (esquerda) {          /* botão 1 = tentar novamente */
+                gera_plataformas();
+                atualiza_leds(p.vidas);
+                estado_jogo = ESTADO_JOGANDO;
+            } else if (direita) {    /* botão 0 = sair */
+                programa_rodando = 0;
+            }
+            break;
+        }
+#ifdef SDL_SIM
+        /* a física (GRAVIDADE/VEL_PULO/...) foi calibrada assumindo
+         * FPS_ESTIMADO=30; sem isso o loop rodaria sem limite de velocidade. */
+        Uint32 duracao = SDL_GetTicks() - frame_inicio;
+        Uint32 alvo = 1000 / FPS_ESTIMADO;
+        if (duracao < alvo) SDL_Delay(alvo - duracao);
+#endif
     }
 
-#ifdef DE1_SOC
+#ifdef SDL_SIM
+    SDL_DestroyTexture(sdl_texture);
+    SDL_DestroyRenderer(sdl_renderer);
+    SDL_DestroyWindow(sdl_window);
+    SDL_Quit();
+#elif defined(DE1_SOC)
     munmap((void *)peripherals, HW_REGS_SPAN);
     close(fd);
 #endif
