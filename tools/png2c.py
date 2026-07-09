@@ -44,9 +44,17 @@ def main():
     ap.add_argument("--crop", help="x,y,w,h -- recorta essa região antes de converter")
     ap.add_argument("--resize", help="w,h -- redimensiona (depois do --crop) antes de converter, "
                                       "distorcendo a imagem se a proporção for diferente")
+    ap.add_argument("--nearest", action="store_true",
+                     help="usa nearest-neighbor em vez de LANCZOS no --resize -- para pixel art "
+                          "gerada em blocos (ex: ícone 16x16 desenhado em blocos de 10px = 160x160), "
+                          "evita borrar/suavizar os blocos ao reduzir de volta ao tamanho original")
     ap.add_argument("--letterbox", help="w,h -- redimensiona preservando a proporção original "
                                          "(depois do --crop) e preenche as sobras com preto, "
                                          "em vez de distorcer; usado p/ fundos full-screen")
+    ap.add_argument("--cover", help="w,h -- redimensiona preservando a proporção original e corta "
+                                     "o excesso pra preencher o quadro inteiro sem sobras (oposto do "
+                                     "--letterbox: usa 100%% da tela, perdendo um pouco das bordas "
+                                     "da imagem original, em vez de tarjas pretas)")
     ap.add_argument("--bg", action="append",
                      help="r,g,b -- cor de fundo a ser tratada como transparente "
                           "(pode ser passado mais de uma vez, se houver mais de um tom de fundo)")
@@ -63,7 +71,8 @@ def main():
 
     if args.resize:
         novo_w, novo_h = parse_tupla(args.resize)
-        img = img.resize((novo_w, novo_h), Image.LANCZOS)
+        filtro = Image.NEAREST if args.nearest else Image.LANCZOS
+        img = img.resize((novo_w, novo_h), filtro)
 
     if args.letterbox:
         cx, cy = parse_tupla(args.letterbox)
@@ -73,6 +82,15 @@ def main():
         canvas = Image.new("RGBA", (cx, cy), (0, 0, 0, 255))
         canvas.alpha_composite(redimensionada, ((cx - novo_w) // 2, (cy - novo_h) // 2))
         img = canvas
+
+    if args.cover:
+        cx, cy = parse_tupla(args.cover)
+        escala = max(cx / img.width, cy / img.height)
+        novo_w, novo_h = round(img.width * escala), round(img.height * escala)
+        redimensionada = img.resize((novo_w, novo_h), Image.LANCZOS)
+        esquerda = (novo_w - cx) // 2
+        topo = (novo_h - cy) // 2
+        img = redimensionada.crop((esquerda, topo, esquerda + cx, topo + cy))
 
     w, h = img.size
     nome = args.nome or args.arquivo.split("/")[-1].split("\\")[-1].rsplit(".", 1)[0]

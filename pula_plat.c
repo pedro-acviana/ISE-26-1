@@ -62,7 +62,9 @@ static uint32_t sdl_led_reg, sdl_hex_reg, sdl_switch_reg, sdl_button_reg;
 #include "sprites/cloud_bg6_sprite.h"
 #include "sprites/cloud_bg7_sprite.h"
 #include "sprites/cloud_bg8_sprite.h"
-#include "sprites/plataforma_gelo_sprite.h"
+#include "sprites/plataforma_derr1_sprite.h"
+#include "sprites/plataforma_derr2_sprite.h"
+#include "sprites/plataforma_derr3_sprite.h"
 #include "sprites/tela_inicio_sprite.h"
 #include "sprites/tela_game_over_sprite.h"
 
@@ -127,8 +129,13 @@ int camera_y = 0;
 #define N_PLAT 8
 #define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
 
+#define KIRBY_VIDAS_MAX 5
+#define VILAO_VIDAS_MAX 6
+#define PONTOS_MAX      1000
+
 typedef struct {
     int x, y, w, h;
+    int melt_timer;   /* frames desde que foi gerada - ver atualiza_derretimento/plataforma_visual */
 } Plataforma;
 
 typedef struct {
@@ -286,6 +293,22 @@ void desenha_sprite(int x, int y, const uint16_t *sprite, int w, int h,
         }
 }
 
+/* Igual a desenha_sprite, mas amostra o sprite original (sw x sh) reduzido
+ * pra um tamanho menor (dw x dh) por nearest-neighbor. Usado nos ícones de
+ * vida do vilão (ver desenha_vidas_vilao), pra não precisar gerar um sprite
+ * novo só pra versão pequena. */
+void desenha_sprite_reduzido(int x, int y, const uint16_t *sprite, int sw, int sh,
+                              uint16_t transparente, int dw, int dh)
+{
+    for (int j = 0; j < dh; j++)
+        for (int i = 0; i < dw; i++) {
+            int sx = i * sw / dw, sy = j * sh / dh;
+            uint16_t cor = sprite[sy * sw + sx];
+            if (cor != transparente)
+                plot_pixel(x + i, y + j, cor);
+        }
+}
+
 /* Um sprite de céu por nível de altitude (nivel_nuvem 1..8), trocado a cada
  * 10 gerações de plataforma (ver gera_plataforma_seguinte). O último nível
  * fica valendo pra sempre depois disso. */
@@ -329,9 +352,11 @@ void atualiza_display(int pontos)
     snprintf(titulo, sizeof(titulo), "Pula Plataformas - Pontos: %d  Vidas: %d", pontos, p.vidas);
     SDL_SetWindowTitle(sdl_window, titulo);
 #else
+    int milhar = (pontos / 1000) % 10;
+    int centena = (pontos / 100) % 10;
     int dez = (pontos / 10) % 10;
     int uni = pontos % 10;
-    *hex_ptr = seg[dez] << 8 | seg[uni];
+    *hex_ptr = seg[milhar] << 24 | seg[centena] << 16 | seg[dez] << 8 | seg[uni];
 #endif
 }
 
@@ -427,7 +452,7 @@ void reseta_vilao(void)
 {
     vilao.x = WIDTH / 2 - VILAO_PARADO_W / 2;
     vilao.dir = 1;
-    vilao.vidas = 3;
+    vilao.vidas = VILAO_VIDAS_MAX;
     vilao.cooldown_tiro = VILAO_COOLDOWN_TIRO;
     vilao.estado = VILAO_NORMAL;
     vilao.timer = 0;
@@ -577,6 +602,23 @@ void desenha_vilao(void)
     desenha_sprite(cx - sw / 2, cy - sh / 2, sprite, sw, sh, transp, vilao.dir < 0);
 }
 
+/* Vidas do vilão (VILAO_VIDAS_MAX), em versões reduzidas do próprio sprite
+ * parado, enfileiradas no topo da tela - acima da faixa de voo do vilão
+ * (VILAO_Y), então não fica por cima dele. */
+#define VIDA_VILAO_W 11
+#define VIDA_VILAO_H 10
+#define VIDA_VILAO_GAP 2
+
+void desenha_vidas_vilao(void)
+{
+    for (int i = 0; i < vilao.vidas; i++) {
+        int x = 4 + i * (VIDA_VILAO_W + VIDA_VILAO_GAP);
+        desenha_sprite_reduzido(x, 2, (const uint16_t *)vilao_parado_sprite,
+                                 VILAO_PARADO_W, VILAO_PARADO_H, VILAO_PARADO_TRANSPARENT,
+                                 VIDA_VILAO_W, VIDA_VILAO_H);
+    }
+}
+
 void desenha_projetil(void)
 {
     if (!projetil.ativo) return;
@@ -603,6 +645,21 @@ void desenha_seta_mira(int mira_esq, int mira_dir)
     }
 }
 
+/* Vidas do Kirby (KIRBY_VIDAS_MAX), como pips vermelhos no canto inferior
+ * direito da tela - mesmo valor também sai nos LEDs (ver atualiza_leds). */
+#define VIDA_KIRBY_TAM 6
+#define VIDA_KIRBY_GAP 3
+
+void desenha_vidas_kirby(void)
+{
+    int total_w = KIRBY_VIDAS_MAX * VIDA_KIRBY_TAM + (KIRBY_VIDAS_MAX - 1) * VIDA_KIRBY_GAP;
+    int x0 = WIDTH - 4 - total_w;
+    int y0 = HEIGHT - 4 - VIDA_KIRBY_TAM;
+    for (int i = 0; i < p.vidas; i++)
+        desenha_retangulo(x0 + i * (VIDA_KIRBY_TAM + VIDA_KIRBY_GAP), y0,
+                           VIDA_KIRBY_TAM, VIDA_KIRBY_TAM, RED);
+}
+
 void gera_plataformas(void)
 {
     contador_plataformas = 0;
@@ -617,7 +674,7 @@ void gera_plataformas(void)
     p.y = (plataformas[0].y - KIRBY_IDLE_H) << 8;
     p.vy = 0;
     p.w = KIRBY_IDLE_W; p.h = KIRBY_IDLE_H;
-    p.vidas = 3;
+    p.vidas = KIRBY_VIDAS_MAX;
     p.pontos = 0;
     camera_y = 0;
 
@@ -645,6 +702,46 @@ void recicla_plataformas(void)
 {
     for (int i = 0; i < N_PLAT; i++) {
         if (plataformas[i].y - camera_y > HEIGHT + N_PLAT_ALTURA_MAX) {
+            Plataforma *topo = plataforma_mais_alta();
+            gera_plataforma_seguinte(topo, &plataformas[i], sorteia_dy());
+        }
+    }
+}
+
+/* ---------------- Derretimento das plataformas ---------------- */
+/* Dificuldade extra: toda plataforma dura só PLAT_VIDA_FRAMES (9s) desde que
+ * foi gerada. A cada PLAT_ESTAGIO_FRAMES (3s) ela passa a usar um sprite de
+ * "derretendo" menor (1 -> 2 -> 3), dando cada vez menos espaço pra pousar,
+ * até sumir de vez e ser reaproveitada (mesmo mecanismo de recicla_plataformas
+ * acima, então o jogador some com o chão embaixo dele se demorar demais). */
+#define PLAT_ESTAGIO_FRAMES (FPS_ESTIMADO * 3)
+#define PLAT_VIDA_FRAMES    (FPS_ESTIMADO * 9)
+
+void plataforma_visual(const Plataforma *pl, const uint16_t **sprite,
+                        int *sw, int *sh, uint16_t *transp)
+{
+    int estagio = pl->melt_timer / PLAT_ESTAGIO_FRAMES;
+    switch (estagio) {
+    case 0:
+        *sprite = (const uint16_t *)plataforma_derr1_sprite;
+        *sw = PLATAFORMA_DERR1_W; *sh = PLATAFORMA_DERR1_H; *transp = PLATAFORMA_DERR1_TRANSPARENT;
+        break;
+    case 1:
+        *sprite = (const uint16_t *)plataforma_derr2_sprite;
+        *sw = PLATAFORMA_DERR2_W; *sh = PLATAFORMA_DERR2_H; *transp = PLATAFORMA_DERR2_TRANSPARENT;
+        break;
+    default:
+        *sprite = (const uint16_t *)plataforma_derr3_sprite;
+        *sw = PLATAFORMA_DERR3_W; *sh = PLATAFORMA_DERR3_H; *transp = PLATAFORMA_DERR3_TRANSPARENT;
+        break;
+    }
+}
+
+void atualiza_derretimento(void)
+{
+    for (int i = 0; i < N_PLAT; i++) {
+        plataformas[i].melt_timer++;
+        if (plataformas[i].melt_timer >= PLAT_VIDA_FRAMES) {
             Plataforma *topo = plataforma_mais_alta();
             gera_plataforma_seguinte(topo, &plataformas[i], sorteia_dy());
         }
@@ -686,19 +783,24 @@ void atualiza_estado(int esquerda, int direita, int pular)
     if (p.vy > 0) {
         for (int i = 0; i < N_PLAT; i++) {
             Plataforma *pl = &plataformas[i];
+            const uint16_t *sprite_pl; int sw, sh; uint16_t transp_pl;
+            plataforma_visual(pl, &sprite_pl, &sw, &sh, &transp_pl);
             int px = p.x >> 8, py = p.y >> 8;
-            if (px + p.w > pl->x && px < pl->x + pl->w &&
-                py + p.h >= pl->y && py + p.h <= pl->y + pl->h + 4) {
+            if (px + p.w > pl->x && px < pl->x + sw &&
+                py + p.h >= pl->y && py + p.h <= pl->y + sh + 4) {
                 p.y = (pl->y - p.h) << 8;
                 p.vy = 0;
             }
         }
     }
 
-    /* pontuação = altura recorde alcançada (em mundo), 10px por ponto */
+    /* pontuação = altura recorde alcançada (em mundo), 10px por ponto, até o
+     * teto de PONTOS_MAX (ver renderiza_cena p/ o sprite de campeão nesse ponto) */
     int altura = CHAO_Y - (p.y >> 8);
-    if (altura / 10 > p.pontos)
+    if (altura / 10 > p.pontos) {
         p.pontos = altura / 10;
+        if (p.pontos > PONTOS_MAX) p.pontos = PONTOS_MAX;
+    }
 
     /* câmera só sobe: se o jogador passou do limiar perto do topo da tela,
      * empurra a câmera pra cima, o que visualmente empurra o mundo (fundo e
@@ -768,7 +870,7 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry,
     if (kirby_hit_timer > 0) {
         sprite = (const uint16_t *)kirby_atingido_sprite;
         sw = KIRBY_ATINGIDO_W; sh = KIRBY_ATINGIDO_H; transp = KIRBY_ATINGIDO_TRANSPARENT;
-    } else if (vilao.estado == VILAO_EXPLODINDO) {
+    } else if (vilao.estado == VILAO_EXPLODINDO || p.pontos >= PONTOS_MAX) {
         sprite = (const uint16_t *)kirby_campeao_sprite;
         sw = KIRBY_CAMPEAO_W; sh = KIRBY_CAMPEAO_H; transp = KIRBY_CAMPEAO_TRANSPARENT;
     } else if (parry) {
@@ -794,15 +896,18 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry,
     }
 
     desenha_fundo();
-    for (int i = 0; i < N_PLAT; i++)
+    for (int i = 0; i < N_PLAT; i++) {
+        const uint16_t *sprite_pl; int sw_pl, sh_pl; uint16_t transp_pl;
+        plataforma_visual(&plataformas[i], &sprite_pl, &sw_pl, &sh_pl, &transp_pl);
         desenha_sprite(plataformas[i].x, plataformas[i].y - camera_y,
-                        (const uint16_t *)plataforma_gelo_sprite,
-                        PLATAFORMA_GELO_W, PLATAFORMA_GELO_H,
-                        PLATAFORMA_GELO_TRANSPARENT, 0);
+                        sprite_pl, sw_pl, sh_pl, transp_pl, 0);
+    }
     desenha_vilao();
     desenha_projetil();
     desenha_kirby(sprite, sw, sh, transp, direcao_h < 0);
     if (parry) desenha_seta_mira(mira_esq, mira_dir);
+    desenha_vidas_vilao();
+    desenha_vidas_kirby();
     atualiza_display(p.pontos);
     atualiza_tela();
 }
@@ -889,6 +994,7 @@ int main(void)
             atualiza_estado(mov_esquerda, mov_direita, pular);
             atualiza_vilao();
             atualiza_projetil(parry, esquerda, direita);
+            atualiza_derretimento();
             if (estado_jogo == ESTADO_GAME_OVER)
                 break;
             renderiza_cena(mov_esquerda, mov_direita, parado_antes, parry, esquerda, direita);

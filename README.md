@@ -136,11 +136,17 @@ sudo ./jogo
 - Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu"), desviando
   (ou refletindo) os ataques do vilão-nave que patrulha o topo da tela
 - A cada 10 plataformas geradas o céu muda de nível (até 8 níveis, depois repete o último)
+- Toda plataforma derrete com o tempo: dura 9s desde que é gerada, ficando visivelmente menor a
+  cada 3s (sprites de "derretendo" 1/2/3), até sumir de vez - se o Kirby demorar demais em cima
+  de uma, ela some embaixo dele
 - Levar um tiro custa uma vida e deixa o Kirby atordoado por 2s; cair da tela também custa uma
-  vida; ao perder as 3 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0
-  sai)
-- O vilão tem 3 vidas; ao perdê-las todas, explode, some pelo resto da partida e o Kirby comemora
-- A pontuação é exibida nos displays de 7 segmentos e o número de vidas do Kirby nos LEDs
+  vida; ao perder as 5 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0
+  sai). As vidas do Kirby aparecem tanto nos LEDs quanto em pips vermelhos no canto inferior
+  direito da tela
+- O vilão tem 6 vidas, mostradas como ícones reduzidos do próprio sprite no topo da tela; ao
+  perdê-las todas, ele explode, some pelo resto da partida e o Kirby comemora
+- A pontuação vai até 1000 (exibida nos displays de 7 segmentos, usando os 4 dígitos); ao
+  alcançar o topo, o Kirby também comemora com o sprite de campeão
 
 ## Laço principal do jogo
 
