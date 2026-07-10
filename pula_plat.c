@@ -50,6 +50,7 @@ static uint32_t sdl_led_reg, sdl_hex_reg, sdl_switch_reg, sdl_button_reg;
 #include "sprites/kirby_inicial2_sprite.h"
 #include "sprites/kirby_inicial3_sprite.h"
 #include "sprites/kirby_inicial4_sprite.h"
+#include "sprites/kirby_inicial5_sprite.h"
 #include "sprites/vilao_parado_sprite.h"
 #include "sprites/vilao_atingido_sprite.h"
 #include "sprites/vilao_explodido_sprite.h"
@@ -62,6 +63,7 @@ static uint32_t sdl_led_reg, sdl_hex_reg, sdl_switch_reg, sdl_button_reg;
 #include "sprites/cloud_bg6_sprite.h"
 #include "sprites/cloud_bg7_sprite.h"
 #include "sprites/cloud_bg8_sprite.h"
+#include "sprites/plataforma_gelo_sprite.h"
 #include "sprites/plataforma_derr1_sprite.h"
 #include "sprites/plataforma_derr2_sprite.h"
 #include "sprites/plataforma_derr3_sprite.h"
@@ -117,6 +119,13 @@ uint16_t back_buffer[HEIGHT][WIDTH];
 #define CAMERA_LIMIAR (HEIGHT / 3)
 int camera_y = 0;
 
+/* Limiar (em pixels de tela) usado por garante_plataformas_acima: assim que
+ * a referência mais alta (plataforma ou jogador) cruza o primeiro terço da
+ * tela de baixo para cima - ou seja, sai do terço inferior - já garante uma
+ * plataforma nova acima dela. Bem mais folgado que CAMERA_LIMIAR, para nunca
+ * faltar plataforma mesmo em pulos consecutivos rápidos. */
+#define N_PLAT_GERA_LIMIAR (HEIGHT * 2 / 3)
+
 /* ---------------- Temporizadores (em frames) ---------------- */
 /* O loop principal não tem delay fixo (roda na velocidade do CPUlator/placa),
  * então "frames" aqui é só uma referência de duração aproximada, no mesmo
@@ -126,12 +135,12 @@ int camera_y = 0;
 #define IDLE_ANIM_FRAMES 20                    /* velocidade da respiração/alternância parado */
 
 /* ---------------- Estruturas do jogo ---------------- */
-#define N_PLAT 8
+#define N_PLAT 6
 #define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
 
 #define KIRBY_VIDAS_MAX 5
-#define VILAO_VIDAS_MAX 6
-#define PONTOS_MAX      1000
+#define VILAO_VIDAS_MAX 10
+#define PONTOS_MAX      10000
 
 typedef struct {
     int x, y, w, h;
@@ -146,7 +155,7 @@ typedef struct {
     int   pontos;
 } Player;
 
-typedef enum { ESTADO_INICIO, ESTADO_JOGANDO, ESTADO_GAME_OVER } EstadoJogo;
+typedef enum { ESTADO_INICIO, ESTADO_JOGANDO, ESTADO_GAME_OVER, ESTADO_VITORIA } EstadoJogo;
 
 typedef enum { VILAO_NORMAL, VILAO_ATINGIDO, VILAO_EXPLODINDO, VILAO_MORTO } EstadoVilao;
 
@@ -174,6 +183,15 @@ Plataforma plataformas[N_PLAT];
 Player p;
 int direcao_h = 1;   /* 1 = olhando p/ direita, -1 = p/ esquerda (última direção andada) */
 
+/* Y (mundo) da última plataforma em que o jogador realmente pousou (colisão
+ * com vy voltando a 0), não a posição dele em tempo real - ver
+ * garante_plataformas_acima. Durante o pulo o personagem passa por cima de
+ * plataformas mais à frente sem ter pousado nelas (o alcance vertical do
+ * pulo, ~46px, pode superar o vão de 15-40px até a próxima), então usar a
+ * posição instantânea faria o jogo achar que ele já "ultrapassou" degraus
+ * que na verdade ainda precisa usar. */
+int plataforma_atual_y = CHAO_Y;
+
 EstadoJogo estado_jogo = ESTADO_INICIO;
 int programa_rodando = 1;
 
@@ -182,7 +200,7 @@ Projetil projetil;
 int kirby_hit_timer = 0;     /* >0 = Kirby atordoado mostrando kirby_atingido, sem controle */
 int idle_anim_timer = 0;     /* frames parado seguidos, pra alternar os sprites de respiração */
 int contador_plataformas = 0;
-int nivel_nuvem = 1;         /* 1..8: sobe a cada 10 gerações de plataforma */
+int nivel_nuvem = 1;         /* 1..8: sobe a cada NIVEL_NUVEM_GERACOES gerações de plataforma */
 int frame_intro = 0;         /* animação dos kirbys na tela de início */
 
 /* ---------------- Inicialização de hardware ---------------- */
@@ -389,10 +407,16 @@ int alcance_horizontal(int dy_px)
     return (int)(alcance * 0.8);   /* margem de segurança */
 }
 
-#define N_PLAT_ALTURA_MIN 15  /* px - deve ficar bem abaixo do pulo máximo (~46px) */
+#define N_PLAT_ALTURA_MIN 20  /* px - deve ficar bem abaixo do pulo máximo (~46px) */
 #define N_PLAT_ALTURA_MAX 40
 #define N_PLAT_LARGURA    40
 #define N_PLAT_MARGEM     10  /* px de margem lateral da tela */
+#define N_PLAT_GAP_EXTRA  12  /* soma nos dois extremos do gap sorteado, afastando um pouco
+                                 * mais as plataformas (menos sobreposição, saltos um pouco
+                                 * mais longos) - ainda dentro da margem de segurança de
+                                 * alcance_horizontal */
+
+#define NIVEL_NUVEM_GERACOES 25  /* gerações de plataforma até subir 1 nível de céu (ceu_niveis) */
 
 /* Sorteia a próxima plataforma a partir da "distância entre pontas": a
  * distância horizontal entre a borda da plataforma anterior (na direção do
@@ -410,8 +434,8 @@ void gera_plataforma_seguinte(Plataforma *anterior, Plataforma *nova, int dy)
 {
     int dir = (rand() % 2) ? 1 : -1;
 
-    int gap_min = -(anterior->w / 2);
-    int gap_max = alcance_horizontal(dy);
+    int gap_min = -(anterior->w / 2) + N_PLAT_GAP_EXTRA;
+    int gap_max = alcance_horizontal(dy) + N_PLAT_GAP_EXTRA;
     if (gap_max < gap_min) gap_max = gap_min;
 
     int gap = gap_min + rand() % (gap_max - gap_min + 1);
@@ -429,10 +453,10 @@ void gera_plataforma_seguinte(Plataforma *anterior, Plataforma *nova, int dy)
 
     *nova = (Plataforma){novo_x, anterior->y - dy, N_PLAT_LARGURA, 6};
 
-    /* a cada 10 gerações, sobe um nível de céu (ver ceu_niveis); satura no
-     * último nível em vez de voltar ao início. */
+    /* a cada NIVEL_NUVEM_GERACOES gerações, sobe um nível de céu (ver
+     * ceu_niveis); satura no último nível em vez de voltar ao início. */
     contador_plataformas++;
-    nivel_nuvem = 1 + contador_plataformas / 10;
+    nivel_nuvem = 1 + contador_plataformas / NIVEL_NUVEM_GERACOES;
     if (nivel_nuvem > 8) nivel_nuvem = 8;
 }
 
@@ -645,10 +669,11 @@ void desenha_seta_mira(int mira_esq, int mira_dir)
     }
 }
 
-/* Vidas do Kirby (KIRBY_VIDAS_MAX), como pips vermelhos no canto inferior
- * direito da tela - mesmo valor também sai nos LEDs (ver atualiza_leds). */
-#define VIDA_KIRBY_TAM 6
-#define VIDA_KIRBY_GAP 3
+/* Vidas do Kirby (KIRBY_VIDAS_MAX), como versões reduzidas do kirby_neutro
+ * no canto inferior direito da tela - mesmo valor também sai nos LEDs (ver
+ * atualiza_leds). */
+#define VIDA_KIRBY_TAM 10
+#define VIDA_KIRBY_GAP 2
 
 void desenha_vidas_kirby(void)
 {
@@ -656,8 +681,10 @@ void desenha_vidas_kirby(void)
     int x0 = WIDTH - 4 - total_w;
     int y0 = HEIGHT - 4 - VIDA_KIRBY_TAM;
     for (int i = 0; i < p.vidas; i++)
-        desenha_retangulo(x0 + i * (VIDA_KIRBY_TAM + VIDA_KIRBY_GAP), y0,
-                           VIDA_KIRBY_TAM, VIDA_KIRBY_TAM, RED);
+        desenha_sprite_reduzido(x0 + i * (VIDA_KIRBY_TAM + VIDA_KIRBY_GAP), y0,
+                                 (const uint16_t *)kirby_neutro_sprite,
+                                 KIRBY_NEUTRO_W, KIRBY_NEUTRO_H, KIRBY_NEUTRO_TRANSPARENT,
+                                 VIDA_KIRBY_TAM, VIDA_KIRBY_TAM);
 }
 
 void gera_plataformas(void)
@@ -677,6 +704,7 @@ void gera_plataformas(void)
     p.vidas = KIRBY_VIDAS_MAX;
     p.pontos = 0;
     camera_y = 0;
+    plataforma_atual_y = plataformas[0].y;
 
     kirby_hit_timer = 0;
     idle_anim_timer = 0;
@@ -694,6 +722,27 @@ Plataforma *plataforma_mais_alta(void)
     return melhor;
 }
 
+/* Escolhe uma plataforma já gerada para o jogador renascer em cima dela após
+ * perder uma vida - nunca um ponto fixo de tela, que podia não ter nada
+ * embaixo (causa do jogador cair de novo no vazio logo após renascer, e de
+ * garante_plataformas_acima "confundir" essa posição fantasma com o jogador
+ * já tendo ultrapassado plataformas que na verdade ainda precisava). Escolhe
+ * a mais próxima da altura de referência da câmera (camera_y + CAMERA_LIMIAR). */
+Plataforma *plataforma_para_respawn(void)
+{
+    int alvo_y = camera_y + CAMERA_LIMIAR;
+    Plataforma *melhor = &plataformas[0];
+    int melhor_dist = abs(plataformas[0].y - alvo_y);
+    for (int i = 1; i < N_PLAT; i++) {
+        int dist = abs(plataformas[i].y - alvo_y);
+        if (dist < melhor_dist) {
+            melhor = &plataformas[i];
+            melhor_dist = dist;
+        }
+    }
+    return melhor;
+}
+
 /* Qualquer plataforma que já saiu de tela por baixo (rolou para fora da
  * câmera) é reaproveitada: vira uma plataforma nova, gerada acima da mais
  * alta que existir no momento. É assim que a escalada fica infinita sem
@@ -708,15 +757,74 @@ void recicla_plataformas(void)
     }
 }
 
+/* Número de plataformas que o jogador precisa deixar pra trás (já pousando
+ * em outras depois delas) antes que a mais antiga dentre elas possa ser
+ * reciclada - uma folga extra além do mínimo de 1, pra ele poder recuar
+ * alguns pulos sem ver o caminho já andado sumir logo atrás dos pés. */
+#define N_PLAT_BUFFER_TRAS 3
+
+/* Reciclagem proativa: se o jogador está subindo mais rápido do que
+ * recicla_plataformas() consegue repor (ela só age quando a plataforma já
+ * saiu de tela por baixo), a pilha de N_PLAT plataformas pode "acabar" lá em
+ * cima e a geração para de acompanhar o jogador. Aqui, sempre que a
+ * referência mais alta (a plataforma mais alta OU o próprio jogador, o que
+ * estiver mais alto - ver comentário de `referencia` abaixo) já cruzou o
+ * primeiro terço da tela de baixo para cima (N_PLAT_GERA_LIMIAR), adianta a
+ * geração de mais uma plataforma acima dela - reaproveitando a mais
+ * "atrasada" (mais baixa em mundo) dentre as que já ficaram pra trás da
+ * última em que o jogador realmente pousou (plataforma_atual_y), mas só
+ * depois que pelo menos N_PLAT_BUFFER_TRAS delas já tiverem ficado pra trás
+ * (ver contagem abaixo) - assim sempre sobra um colchão de plataformas já
+ * usadas logo atrás dele, não só a última. Note que isso usa a última
+ * plataforma PISADA, não a posição instantânea do jogador: durante o pulo
+ * ele passa por cima de plataformas mais à frente sem ter pousado nelas, e
+ * usar a posição em tempo real reciclaria degraus que ele ainda precisa
+ * usar (bug: a próxima plataforma sumia assim que ele pulava da primeira). */
+void garante_plataformas_acima(void)
+{
+    Plataforma *topo = plataforma_mais_alta();
+    int py_mundo = p.y >> 8;
+
+    /* Se o jogador, em pleno pulo, já ultrapassou a plataforma mais alta
+     * existente (caso do bug: nada gerado acima dele), gerar "acima do
+     * topo" antigo ainda deixaria a nova plataforma abaixo dele. Por isso a
+     * referência usada para gerar a próxima plataforma passa a ser a
+     * posição atual do jogador nesse caso, garantindo que o resultado fique
+     * acima de onde ele está de verdade, não de onde a plataforma mais alta
+     * (já ultrapassada) está. */
+    Plataforma referencia = *topo;
+    if (py_mundo < referencia.y) {
+        referencia.x = p.x >> 8;
+        referencia.y = py_mundo;
+        referencia.w = p.w;
+    }
+
+    if (referencia.y - camera_y > N_PLAT_GERA_LIMIAR)
+        return;
+
+    int atras = 0;
+    Plataforma *mais_baixa = NULL;
+    for (int i = 0; i < N_PLAT; i++) {
+        if (plataformas[i].y > plataforma_atual_y) {
+            atras++;
+            if (!mais_baixa || plataformas[i].y > mais_baixa->y)
+                mais_baixa = &plataformas[i];
+        }
+    }
+    if (atras < N_PLAT_BUFFER_TRAS)
+        return;   /* ainda não sobrou colchão suficiente de plataformas já usadas */
+
+    gera_plataforma_seguinte(&referencia, mais_baixa, sorteia_dy());
+}
+
 /* ---------------- Derretimento das plataformas ---------------- */
 /* Dificuldade extra: toda plataforma dura só PLAT_VIDA_FRAMES (12s) desde que
- * foi gerada, dividida em 3 estágios iguais (4s cada). A cada estágio ela
- * passa a usar um sprite de "derretendo" menor (1 -> 2 -> 3), dando cada vez
- * menos espaço pra pousar, até sumir de vez e ser reaproveitada (mesmo
- * mecanismo de recicla_plataformas acima, então o jogador some com o chão
- * embaixo dele se demorar demais). */
-#define PLAT_VIDA_FRAMES    (FPS_ESTIMADO * 12)
-#define PLAT_ESTAGIO_FRAMES (PLAT_VIDA_FRAMES / 3)
+ * foi gerada, em 4 estágios iguais (3s cada): gelo normal -> derretendo 1 ->
+ * derretendo 2 -> derretendo 3, cada um menor que o anterior, até sumir de
+ * vez e ser reaproveitada (mesmo mecanismo de recicla_plataformas acima,
+ * então o jogador some com o chão embaixo dele se demorar demais). */
+#define PLAT_ESTAGIO_FRAMES (FPS_ESTIMADO * 3)
+#define PLAT_VIDA_FRAMES    (PLAT_ESTAGIO_FRAMES * 4)
 
 void plataforma_visual(const Plataforma *pl, const uint16_t **sprite,
                         int *sw, int *sh, uint16_t *transp)
@@ -724,10 +832,14 @@ void plataforma_visual(const Plataforma *pl, const uint16_t **sprite,
     int estagio = pl->melt_timer / PLAT_ESTAGIO_FRAMES;
     switch (estagio) {
     case 0:
+        *sprite = (const uint16_t *)plataforma_gelo_sprite;
+        *sw = PLATAFORMA_GELO_W; *sh = PLATAFORMA_GELO_H; *transp = PLATAFORMA_GELO_TRANSPARENT;
+        break;
+    case 1:
         *sprite = (const uint16_t *)plataforma_derr1_sprite;
         *sw = PLATAFORMA_DERR1_W; *sh = PLATAFORMA_DERR1_H; *transp = PLATAFORMA_DERR1_TRANSPARENT;
         break;
-    case 1:
+    case 2:
         *sprite = (const uint16_t *)plataforma_derr2_sprite;
         *sw = PLATAFORMA_DERR2_W; *sh = PLATAFORMA_DERR2_H; *transp = PLATAFORMA_DERR2_TRANSPARENT;
         break;
@@ -791,16 +903,20 @@ void atualiza_estado(int esquerda, int direita, int pular)
                 py + p.h >= pl->y && py + p.h <= pl->y + sh + 4) {
                 p.y = (pl->y - p.h) << 8;
                 p.vy = 0;
+                plataforma_atual_y = pl->y;
             }
         }
     }
 
     /* pontuação = altura recorde alcançada (em mundo), 10px por ponto, até o
-     * teto de PONTOS_MAX (ver renderiza_cena p/ o sprite de campeão nesse ponto) */
+     * teto de PONTOS_MAX - alcançá-lo vence o jogo (ver ESTADO_VITORIA em main) */
     int altura = CHAO_Y - (p.y >> 8);
     if (altura / 10 > p.pontos) {
         p.pontos = altura / 10;
-        if (p.pontos > PONTOS_MAX) p.pontos = PONTOS_MAX;
+        if (p.pontos >= PONTOS_MAX) {
+            p.pontos = PONTOS_MAX;
+            estado_jogo = ESTADO_VITORIA;
+        }
     }
 
     /* câmera só sobe: se o jogador passou do limiar perto do topo da tela,
@@ -811,6 +927,7 @@ void atualiza_estado(int esquerda, int direita, int pular)
         camera_y = (p.y >> 8) - CAMERA_LIMIAR;
 
     recicla_plataformas();
+    garante_plataformas_acima();
 
     if ((p.y >> 8) - camera_y > HEIGHT) {
         p.vidas--;
@@ -819,11 +936,14 @@ void atualiza_estado(int esquerda, int direita, int pular)
             printf("Fim de jogo. Pontos: %d\n", p.pontos);
             estado_jogo = ESTADO_GAME_OVER;
         } else {
-            /* reaparece bem no limiar da câmera, não no topo, senão o
-             * reajuste de câmera do próximo frame o empurraria de novo */
-            p.x = (WIDTH / 2 - p.w / 2) << 8;
-            p.y = (camera_y + CAMERA_LIMIAR) << 8;
+            /* reaparece sempre em cima de uma plataforma já gerada, nunca
+             * num ponto fixo de tela - garante que haja chão embaixo dele
+             * (ver plataforma_para_respawn) */
+            Plataforma *pl = plataforma_para_respawn();
+            p.x = (pl->x + pl->w / 2 - p.w / 2) << 8;
+            p.y = (pl->y - p.h) << 8;
             p.vy = 0;
+            plataforma_atual_y = pl->y;
         }
     }
 
@@ -916,33 +1036,44 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry,
 /* ---------------- Telas de início / game over ---------------- */
 #define INTRO_FRAME1 (FPS_ESTIMADO * 1)
 #define INTRO_FRAME2 (FPS_ESTIMADO * 1)
+#define INTRO_FRAME3 (FPS_ESTIMADO * 1)
 
-/* Fundo (320x240, resolução nativa da tela, com letterbox preto onde a
- * imagem original não preenche 4:3 - ver --letterbox em tools/png2c.py) com
- * os 4 kirbys da pasta de sprites: 1 e 2 aparecem uma vez cada, depois
- * alterna 3/4 pra sempre - efeito de "acordando" seguido de respiração. */
+/* Fundo (320x240, resolução nativa da tela, cobrindo a tela toda - ver
+ * --cover em tools/png2c.py) com os kirbys da pasta de sprites: 1, 2 e 3
+ * aparecem uma vez cada; depois disso a cena fica parada o resto do tempo,
+ * com o kirby_inicial5 (só a bandeira, sem corpo) no lugar onde o 3 estava
+ * (centro da tela) e o kirby_inicial4 do lado esquerdo dela. */
 void renderiza_tela_inicio(void)
 {
     desenha_sprite(0, 0, (const uint16_t *)tela_inicio_sprite, TELA_INICIO_W, TELA_INICIO_H,
                     TELA_INICIO_TRANSPARENT, 0);
 
     const uint16_t *sprite; int sw, sh; uint16_t transp;
+    int fase_final = 0;
     if (frame_intro < INTRO_FRAME1) {
         sprite = (const uint16_t *)kirby_inicial1_sprite;
         sw = KIRBY_INICIAL1_W; sh = KIRBY_INICIAL1_H; transp = KIRBY_INICIAL1_TRANSPARENT;
     } else if (frame_intro < INTRO_FRAME1 + INTRO_FRAME2) {
         sprite = (const uint16_t *)kirby_inicial2_sprite;
         sw = KIRBY_INICIAL2_W; sh = KIRBY_INICIAL2_H; transp = KIRBY_INICIAL2_TRANSPARENT;
-    } else if (((frame_intro - INTRO_FRAME1 - INTRO_FRAME2) / IDLE_ANIM_FRAMES) % 2 == 0) {
+    } else if (frame_intro < INTRO_FRAME1 + INTRO_FRAME2 + INTRO_FRAME3) {
         sprite = (const uint16_t *)kirby_inicial3_sprite;
         sw = KIRBY_INICIAL3_W; sh = KIRBY_INICIAL3_H; transp = KIRBY_INICIAL3_TRANSPARENT;
     } else {
-        sprite = (const uint16_t *)kirby_inicial4_sprite;
-        sw = KIRBY_INICIAL4_W; sh = KIRBY_INICIAL4_H; transp = KIRBY_INICIAL4_TRANSPARENT;
+        fase_final = 1;
     }
     frame_intro++;
 
-    desenha_sprite(WIDTH / 2 - sw / 2, HEIGHT / 2 - sh / 2, sprite, sw, sh, transp, 0);
+    if (!fase_final) {
+        desenha_sprite(WIDTH / 2 - sw / 2, HEIGHT / 2 - sh / 2, sprite, sw, sh, transp, 0);
+    } else {
+        int fx = WIDTH / 2 - KIRBY_INICIAL5_W / 2, fy = HEIGHT / 2 - KIRBY_INICIAL5_H / 2;
+        desenha_sprite(fx, fy, (const uint16_t *)kirby_inicial5_sprite,
+                        KIRBY_INICIAL5_W, KIRBY_INICIAL5_H, KIRBY_INICIAL5_TRANSPARENT, 0);
+        desenha_sprite(fx - KIRBY_INICIAL4_W + 6, HEIGHT / 2 - KIRBY_INICIAL4_H / 2,
+                        (const uint16_t *)kirby_inicial4_sprite,
+                        KIRBY_INICIAL4_W, KIRBY_INICIAL4_H, KIRBY_INICIAL4_TRANSPARENT, 0);
+    }
     atualiza_tela();
 }
 
@@ -996,7 +1127,7 @@ int main(void)
             atualiza_vilao();
             atualiza_projetil(parry, esquerda, direita);
             atualiza_derretimento();
-            if (estado_jogo == ESTADO_GAME_OVER)
+            if (estado_jogo == ESTADO_GAME_OVER || estado_jogo == ESTADO_VITORIA)
                 break;
             renderiza_cena(mov_esquerda, mov_direita, parado_antes, parry, esquerda, direita);
             break;
@@ -1009,6 +1140,21 @@ int main(void)
                 atualiza_leds(p.vidas);
                 estado_jogo = ESTADO_JOGANDO;
             } else if (direita) {    /* botão 0 = sair */
+                programa_rodando = 0;
+            }
+            break;
+
+        /* Vencer (PONTOS_MAX) congela o jogo com o Kirby de campeão - o
+         * cenário fica parado (sem atualizar vilão/projétil/derretimento),
+         * só aceitando botão 1 (jogar de novo) ou botão 0 (sair), igual ao
+         * game over. */
+        case ESTADO_VITORIA:
+            renderiza_cena(0, 0, 1, 0, 0, 0);
+            if (esquerda) {
+                gera_plataformas();
+                atualiza_leds(p.vidas);
+                estado_jogo = ESTADO_JOGANDO;
+            } else if (direita) {
                 programa_rodando = 0;
             }
             break;

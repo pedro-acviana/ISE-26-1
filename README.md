@@ -13,9 +13,9 @@ e outros dispositivos de entrada/saída da placa.
 ## Estado atual do projeto
 
 - `pula_plat.c` — física de pulo/gravidade, colisão com plataformas, contagem de pontos e
-  vidas (3), telas de início e game over, e um vilão-nave que patrulha o topo da tela
+  vidas (5), telas de início e game over, e um vilão-nave que patrulha o topo da tela
   atirando projéteis no Kirby (com mecânica de parry). O personagem já usa sprites (Kirby); as
-  plataformas usam um sprite de gelo.
+  plataformas usam sprites de gelo que derretem com o tempo (ver "Como jogar").
 - `sprites/` — imagens de sprites baixadas e os headers `.h` já convertidos para uso no jogo.
 - `tools/png2c.py` — script que converte um PNG (ou um recorte dele) em um array C RGB565,
   tratando cor(es) de fundo como transparência. Usado para gerar os arquivos em `sprites/*.h`.
@@ -46,6 +46,34 @@ imagem e preenche as sobras com preto, em vez de esticar/distorcer.
 Exemplo já pronto: `sprites/kirby_idle_sprite.h`, gerado a partir de
 `sprites/NES - Kirby's Adventure - Playable Characters - Kirby.png` e usado como sprite do
 personagem em `renderiza_cena()`.
+
+### Recortando/editando sprites num editor de imagem (pasta `png sprites/`)
+
+Os sprites de personagem/vilão/plataforma em `png sprites/` seguem uma convenção de grade:
+o PNG-fonte é sempre **10x** o tamanho final usado no jogo (facilita recortar/editar pixel a
+pixel sem trabalhar em uma imagem minúscula). Ao editar um desses PNGs, gere o header com:
+
+```bash
+python tools/png2c.py "png sprites/nome.png" --resize W,H --nearest --nome nome > sprites/nome_sprite.h
+```
+
+onde `W,H` é o tamanho do PNG editado dividido por 10 (arredondado, se o recorte não cair
+exatamente na grade de 10px). Use sempre `--nearest` (não o padrão LANCZOS) para não borrar os
+pixels ao reduzir.
+
+**Atenção ao exportar/recortar em editores de imagem (Photoshop, GIMP, etc.):** se a área
+transparente do PNG aparecer como um xadrez cinza em vez de realmente transparente depois de
+convertido (plataformas/personagem com fundo quadriculado no jogo), o editor "achatou" o canal
+alpha e salvou o xadrez de transparência como pixels de verdade (alpha 255 em tudo). Confirme
+abrindo o PNG e checando o canal alpha; se for o caso, trate as duas cores do xadrez como fundo
+com `--bg` (aceita mais de uma vez):
+
+```bash
+python tools/png2c.py "png sprites/nome.png" --resize W,H --nearest \
+    --bg 150,150,150 --bg 210,210,210 --nome nome > sprites/nome_sprite.h
+```
+
+(as cores exatas do xadrez podem variar por editor - confira os pixels do canto da imagem antes).
 
 ## Como compilar
 
@@ -135,17 +163,17 @@ sudo ./jogo
   escolhida em tempo real
 - Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu"), desviando
   (ou refletindo) os ataques do vilão-nave que patrulha o topo da tela
-- A cada 10 plataformas geradas o céu muda de nível (até 8 níveis, depois repete o último)
+- A cada 25 plataformas geradas o céu muda de nível (até 8 níveis, depois fica no último)
 - Toda plataforma derrete com o tempo: dura 9s desde que é gerada, ficando visivelmente menor a
   cada 3s (sprites de "derretendo" 1/2/3), até sumir de vez - se o Kirby demorar demais em cima
   de uma, ela some embaixo dele
 - Levar um tiro custa uma vida e deixa o Kirby atordoado por 2s; cair da tela também custa uma
-  vida; ao perder as 5 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0
-  sai). As vidas do Kirby aparecem tanto nos LEDs quanto em pips vermelhos no canto inferior
-  direito da tela
-- O vilão tem 6 vidas, mostradas como ícones reduzidos do próprio sprite no topo da tela; ao
+  vida (e ele sempre renasce em cima de uma plataforma já gerada, nunca no vazio); ao perder as
+  5 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0 sai). As vidas do
+  Kirby aparecem tanto nos LEDs quanto em pips vermelhos no canto inferior direito da tela
+- O vilão tem 10 vidas, mostradas como ícones reduzidos do próprio sprite no topo da tela; ao
   perdê-las todas, ele explode, some pelo resto da partida e o Kirby comemora
-- A pontuação vai até 1000 (exibida nos displays de 7 segmentos, usando os 4 dígitos); ao
+- A pontuação vai até 10000 (exibida nos displays de 7 segmentos, usando os 4 dígitos); ao
   alcançar o topo, o Kirby também comemora com o sprite de campeão
 
 ## Laço principal do jogo
@@ -169,15 +197,19 @@ while (programa_rodando) {
 
 Itens previstos pelo enunciado do trabalho ainda pendentes nesta versão:
 
-- Sprites para personagem e cenário (substituindo os retângulos atuais)
-- Deslocamento horizontal estilo "Mário" com obstáculos/inimigos (a V1 atual é um protótipo
-  vertical de "pular entre plataformas")
-- Detecção de obstáculos nocivos e obstáculos destrutíveis (atirar/bater)
-- Elementos opcionais para pontuação extra: inimigos ativos, gaps, plataformas suspensas,
-  tesouros, múltiplos níveis, double buffering, interrupções, acelerômetro, joystick,
-  segundo dispositivo de entrada, configuração de jogo
+- Deslocamento horizontal estilo "Mário" com obstáculos/inimigos (o jogo atual é um "pular
+  entre plataformas" vertical estilo Doodle Jump, não o cenário horizontal descrito no
+  enunciado original)
+- Elementos opcionais para pontuação extra ainda não implementados: tesouros, múltiplos
+  níveis distintos (hoje só o céu de fundo muda de nível), interrupções, acelerômetro,
+  joystick, segundo dispositivo de entrada, configuração de jogo (dificuldade/velocidade
+  ajustável)
 - Modelagem UML do jogo
 - Documentação final com resumo da implementação e comentários por função
+
+Já implementado (itens que constavam aqui antes): sprites de personagem/cenário/vilão,
+obstáculos destrutíveis (vilão, com parry) e nocivos (projétil), inimigo ativo que persegue
+via projéteis mirados, plataformas suspensas com gaps, e double buffering.
 
 ## Enunciado do trabalho
 

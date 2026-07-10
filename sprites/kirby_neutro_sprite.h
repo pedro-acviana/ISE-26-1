@@ -1,4 +1,4 @@
-/* Gerado automaticamente a partir de sprites/NES - Kirby's Adventure - Playable Characters - Kirby.png */
+/* Gerado automaticamente a partir de png sprites/kirby_neutro.png */
 #ifndef KIRBY_NEUTRO_SPRITE_H
 #define KIRBY_NEUTRO_SPRITE_H
 
