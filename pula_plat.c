@@ -139,8 +139,8 @@ int camera_y = 0;
 #define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
 
 #define KIRBY_VIDAS_MAX 5
-#define VILAO_VIDAS_MAX 10
-#define PONTOS_MAX      10000
+#define VILAO_VIDAS_MAX 1
+#define PONTOS_MAX      2000
 
 typedef struct {
     int x, y, w, h;
@@ -179,6 +179,14 @@ typedef struct {
     int vx, vy;
 } Projetil;
 
+/* Recordes persistidos entre execuções (ver carrega_recordes/salva_recordes).
+ * -1 = ainda não alcançado em nenhuma partida. */
+typedef struct {
+    int maior_pontuacao;           /* maior pontuação já alcançada numa partida */
+    int pontos_min_chefe;          /* menor pontuação em que o vilão já foi derrotado */
+    int tempo_min_vitoria_frames;  /* menor tempo (em frames) até vencer o jogo */
+} Recordes;
+
 Plataforma plataformas[N_PLAT];
 Player p;
 int direcao_h = 1;   /* 1 = olhando p/ direita, -1 = p/ esquerda (última direção andada) */
@@ -202,6 +210,8 @@ int idle_anim_timer = 0;     /* frames parado seguidos, pra alternar os sprites 
 int contador_plataformas = 0;
 int nivel_nuvem = 1;         /* 1..8: sobe a cada NIVEL_NUVEM_GERACOES gerações de plataforma */
 int frame_intro = 0;         /* animação dos kirbys na tela de início */
+int frames_partida = 0;      /* frames desde que a partida atual começou - ver Recordes */
+Recordes recordes = { -1, -1, -1 };
 
 /* ---------------- Inicialização de hardware ---------------- */
 void init_io(void)
@@ -365,9 +375,17 @@ const uint8_t seg[10] = {
 void atualiza_display(int pontos)
 {
 #ifdef SDL_SIM
-    /* sem display de 7 seg de verdade: mostra pontos/vidas no título da janela */
-    char titulo[64];
-    snprintf(titulo, sizeof(titulo), "Pula Plataformas - Pontos: %d  Vidas: %d", pontos, p.vidas);
+    /* sem display de 7 seg de verdade: mostra pontos/vidas (e os recordes,
+     * quando já existirem) no título da janela */
+    char titulo[224];
+    int n = snprintf(titulo, sizeof(titulo), "Pula Plataformas - Pontos: %d  Vidas: %d", pontos, p.vidas);
+    if (recordes.maior_pontuacao >= 0)
+        n += snprintf(titulo + n, sizeof(titulo) - n, "  |  Recorde: %d pts", recordes.maior_pontuacao);
+    if (recordes.pontos_min_chefe >= 0)
+        n += snprintf(titulo + n, sizeof(titulo) - n, "  |  Recorde chefe: %d pts", recordes.pontos_min_chefe);
+    if (recordes.tempo_min_vitoria_frames >= 0)
+        snprintf(titulo + n, sizeof(titulo) - n, "  |  Recorde vitoria: %.1fs",
+                 recordes.tempo_min_vitoria_frames / (double)FPS_ESTIMADO);
     SDL_SetWindowTitle(sdl_window, titulo);
 #else
     int milhar = (pontos / 1000) % 10;
@@ -381,6 +399,143 @@ void atualiza_display(int pontos)
 void atualiza_leds(int vidas)
 {
     *led_ptr = (1 << vidas) - 1;  /* acende N leds = N vidas */
+}
+
+/* ---------------- Recordes ---------------- */
+/* Persistidos num arquivo simples ao lado do executável. Funciona na
+ * DE1-SoC real e no modo SDL_SIM (ambos têm sistema de arquivos de verdade);
+ * no CPUlator (sem disco persistente) fopen() simplesmente falha e o jogo
+ * segue normalmente sem recordes salvos entre execuções. */
+#define ARQUIVO_RECORDES "recordes.dat"
+
+void carrega_recordes(void)
+{
+    FILE *f = fopen(ARQUIVO_RECORDES, "rb");
+    if (!f) return;   /* nenhum recorde salvo ainda (ou sem sistema de arquivos) */
+    fread(&recordes, sizeof(recordes), 1, f);
+    fclose(f);
+}
+
+void salva_recordes(void)
+{
+    FILE *f = fopen(ARQUIVO_RECORDES, "wb");
+    if (!f) return;
+    fwrite(&recordes, sizeof(recordes), 1, f);
+    fclose(f);
+}
+
+/* Chamada sempre que uma partida termina (game over, por queda ou tiro, ou
+ * vitória) - registra a MAIOR pontuação já alcançada, independente de ter
+ * derrotado o vilão ou vencido. */
+void registra_recorde_pontuacao(void)
+{
+    if (p.pontos > recordes.maior_pontuacao) {
+        recordes.maior_pontuacao = p.pontos;
+        salva_recordes();
+        printf("Novo recorde: %d pontos\n", p.pontos);
+    }
+}
+
+/* Chamada no instante em que o vilão leva o golpe fatal (transição pra
+ * VILAO_EXPLODINDO, ver atualiza_vilao) - registra a MENOR pontuação em que
+ * ele já foi derrotado. */
+void registra_recorde_chefe(void)
+{
+    if (recordes.pontos_min_chefe < 0 || p.pontos < recordes.pontos_min_chefe) {
+        recordes.pontos_min_chefe = p.pontos;
+        salva_recordes();
+        printf("Novo recorde: vilao derrotado com %d pontos\n", p.pontos);
+    }
+}
+
+/* Chamada no instante em que o jogador alcança PONTOS_MAX (ESTADO_VITORIA,
+ * ver atualiza_estado) - registra o MENOR tempo até vencer o jogo. */
+void registra_recorde_vitoria(void)
+{
+    if (recordes.tempo_min_vitoria_frames < 0 || frames_partida < recordes.tempo_min_vitoria_frames) {
+        recordes.tempo_min_vitoria_frames = frames_partida;
+        salva_recordes();
+        printf("Novo recorde: vitoria em %.1fs\n", frames_partida / (double)FPS_ESTIMADO);
+    }
+}
+
+/* Fontinho de dígitos 3x5 (sem serifa, um bit por pixel, 3 bits por linha)
+ * usado só pra desenhar os recordes na tela - o jogo não tem um sprite de
+ * fonte, e não vale a pena criar um só por causa de dois números. */
+static const uint8_t FONTE_DIGITOS[10][5] = {
+    {7,5,5,5,7},   /* 0 */
+    {2,6,2,2,7},   /* 1 */
+    {7,1,7,4,7},   /* 2 */
+    {7,1,7,1,7},   /* 3 */
+    {5,5,7,1,1},   /* 4 */
+    {7,4,7,1,7},   /* 5 */
+    {7,4,7,5,7},   /* 6 */
+    {7,1,1,1,1},   /* 7 */
+    {7,5,7,5,7},   /* 8 */
+    {7,5,7,1,7},   /* 9 */
+};
+#define FONTE_DIGITO_W 3
+#define FONTE_DIGITO_H 5
+
+void desenha_digito(int x, int y, int digito, int escala, uint16_t cor)
+{
+    for (int j = 0; j < FONTE_DIGITO_H; j++)
+        for (int i = 0; i < FONTE_DIGITO_W; i++)
+            if (FONTE_DIGITOS[digito][j] & (1 << (FONTE_DIGITO_W - 1 - i)))
+                desenha_retangulo(x + i * escala, y + j * escala, escala, escala, cor);
+}
+
+void desenha_numero(int x, int y, int valor, int escala, uint16_t cor)
+{
+    char buf[12];
+    int n = snprintf(buf, sizeof(buf), "%d", valor);
+    int passo = (FONTE_DIGITO_W + 1) * escala;
+    for (int i = 0; i < n; i++)
+        desenha_digito(x + i * passo, y, buf[i] - '0', escala, cor);
+}
+
+/* Desenha os recordes (ver Recordes) empilhados a partir de (x,y), um ícone
+ * reduzido + número por linha: maior pontuação já alcançada (Kirby neutro),
+ * menor pontuação em que o vilão já foi derrotado (ícone do vilão) e menor
+ * tempo até vencer o jogo em segundos, arredondado (Kirby campeão). Só
+ * desenha as linhas já alcançadas em alguma partida - se nada foi alcançado
+ * ainda, não desenha nada. */
+#define RECORDE_ICONE_TAM 10
+#define RECORDE_ESCALA    2
+#define RECORDE_GAP       4
+#define RECORDE_LINHA     (RECORDE_ICONE_TAM + RECORDE_GAP)
+#define RECORDE_ALTURA_MAX (3 * RECORDE_LINHA)   /* espaço reservado p/ até as 3 linhas */
+
+void desenha_recordes(int x, int y)
+{
+    int linha = y;
+
+    if (recordes.maior_pontuacao >= 0) {
+        desenha_sprite_reduzido(x, linha, (const uint16_t *)kirby_neutro_sprite,
+                                 KIRBY_NEUTRO_W, KIRBY_NEUTRO_H, KIRBY_NEUTRO_TRANSPARENT,
+                                 RECORDE_ICONE_TAM, RECORDE_ICONE_TAM);
+        desenha_numero(x + RECORDE_ICONE_TAM + RECORDE_GAP, linha + 1,
+                       recordes.maior_pontuacao, RECORDE_ESCALA, WHITE);
+        linha += RECORDE_LINHA;
+    }
+
+    if (recordes.pontos_min_chefe >= 0) {
+        desenha_sprite_reduzido(x, linha, (const uint16_t *)vilao_parado_sprite,
+                                 VILAO_PARADO_W, VILAO_PARADO_H, VILAO_PARADO_TRANSPARENT,
+                                 RECORDE_ICONE_TAM, RECORDE_ICONE_TAM);
+        desenha_numero(x + RECORDE_ICONE_TAM + RECORDE_GAP, linha + 1,
+                       recordes.pontos_min_chefe, RECORDE_ESCALA, WHITE);
+        linha += RECORDE_LINHA;
+    }
+
+    if (recordes.tempo_min_vitoria_frames >= 0) {
+        int segundos = (recordes.tempo_min_vitoria_frames + FPS_ESTIMADO / 2) / FPS_ESTIMADO;
+        desenha_sprite_reduzido(x, linha, (const uint16_t *)kirby_campeao_sprite,
+                                 KIRBY_CAMPEAO_W, KIRBY_CAMPEAO_H, KIRBY_CAMPEAO_TRANSPARENT,
+                                 RECORDE_ICONE_TAM, RECORDE_ICONE_TAM);
+        desenha_numero(x + RECORDE_ICONE_TAM + RECORDE_GAP, linha + 1,
+                       segundos, RECORDE_ESCALA, WHITE);
+    }
 }
 
 /* ---------------- Lógica do jogo ---------------- */
@@ -515,8 +670,10 @@ void atualiza_vilao(void)
     if (vilao.estado == VILAO_ATINGIDO) {
         if (--vilao.timer <= 0)
             vilao.estado = (vilao.vidas > 0) ? VILAO_NORMAL : VILAO_EXPLODINDO;
-        if (vilao.estado == VILAO_EXPLODINDO)
+        if (vilao.estado == VILAO_EXPLODINDO) {
             vilao.timer = FRAMES_2S;
+            registra_recorde_chefe();
+        }
         return;
     }
 
@@ -585,6 +742,7 @@ void atualiza_projetil(int parry, int mira_esq, int mira_dir)
                 if (p.vidas <= 0) {
                     printf("Fim de jogo. Pontos: %d\n", p.pontos);
                     estado_jogo = ESTADO_GAME_OVER;
+                    registra_recorde_pontuacao();
                 }
             }
         }
@@ -705,6 +863,7 @@ void gera_plataformas(void)
     p.pontos = 0;
     camera_y = 0;
     plataforma_atual_y = plataformas[0].y;
+    frames_partida = 0;
 
     kirby_hit_timer = 0;
     idle_anim_timer = 0;
@@ -885,6 +1044,8 @@ void ler_entrada(int *esquerda, int *direita, int *pular, int *parry)
 
 void atualiza_estado(int esquerda, int direita, int pular)
 {
+    frames_partida++;
+
     if (esquerda) p.x -= VEL_LAT;
     if (direita)  p.x += VEL_LAT;
 
@@ -916,6 +1077,8 @@ void atualiza_estado(int esquerda, int direita, int pular)
         if (p.pontos >= PONTOS_MAX) {
             p.pontos = PONTOS_MAX;
             estado_jogo = ESTADO_VITORIA;
+            registra_recorde_vitoria();
+            registra_recorde_pontuacao();
         }
     }
 
@@ -935,6 +1098,7 @@ void atualiza_estado(int esquerda, int direita, int pular)
         if (p.vidas <= 0) {
             printf("Fim de jogo. Pontos: %d\n", p.pontos);
             estado_jogo = ESTADO_GAME_OVER;
+            registra_recorde_pontuacao();
         } else {
             /* reaparece sempre em cima de uma plataforma já gerada, nunca
              * num ponto fixo de tela - garante que haja chão embaixo dele
@@ -1029,6 +1193,8 @@ void renderiza_cena(int esquerda, int direita, int parado_antes, int parry,
     if (parry) desenha_seta_mira(mira_esq, mira_dir);
     desenha_vidas_vilao();
     desenha_vidas_kirby();
+    if (estado_jogo == ESTADO_VITORIA)
+        desenha_recordes(4, HEIGHT - RECORDE_ALTURA_MAX - 4);
     atualiza_display(p.pontos);
     atualiza_tela();
 }
@@ -1087,6 +1253,7 @@ void renderiza_tela_game_over(void)
     desenha_sprite(WIDTH - KIRBY_ATINGIDO_W - 8, HEIGHT - KIRBY_ATINGIDO_H - 4,
                    (const uint16_t *)kirby_atingido_sprite,
                    KIRBY_ATINGIDO_W, KIRBY_ATINGIDO_H, KIRBY_ATINGIDO_TRANSPARENT, 0);
+    desenha_recordes(4, 4);
     atualiza_tela();
 }
 
@@ -1095,6 +1262,7 @@ int main(void)
 {
     srand((unsigned) time(NULL));
     init_io();
+    carrega_recordes();
 
     while (programa_rodando) {
 #ifdef SDL_SIM
