@@ -139,7 +139,7 @@ int camera_y = 0;
 #define CHAO_Y 220   /* altura (mundo) da plataforma inicial, usada de referência p/ pontuação */
 
 #define KIRBY_VIDAS_MAX 5
-#define VILAO_VIDAS_MAX 1
+#define VILAO_VIDAS_MAX 5
 #define PONTOS_MAX      2000
 
 typedef struct {
