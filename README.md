@@ -132,12 +132,15 @@ feita em `pula_plat.c` e regerada com o script sempre que for testar no CPUlator
 ## Como executar
 
 ```bash
-# No CPUlator, basta rodar o binário normalmente
-./jogo
+# Modo SDL_SIM (MSYS2/Windows ou Linux com SDL2), sem privilégios especiais
+./jogo.exe   # ou ./jogo no Linux
 
 # Na DE1-SoC real, é necessário rodar como root (acesso a /dev/mem)
 sudo ./jogo
 ```
+
+No CPUlator não há um passo de "executar" separado: o próprio botão de rodar do simulador já
+compila e inicia o programa colado no editor.
 
 ## Periféricos utilizados
 
@@ -164,17 +167,27 @@ sudo ./jogo
 - Objetivo: subir pulando de plataforma em plataforma até alcançar o topo ("céu"), desviando
   (ou refletindo) os ataques do vilão-nave que patrulha o topo da tela
 - A cada 25 plataformas geradas o céu muda de nível (até 8 níveis, depois fica no último)
-- Toda plataforma derrete com o tempo: dura 9s desde que é gerada, ficando visivelmente menor a
+- Toda plataforma derrete com o tempo: dura 12s desde que é gerada, ficando visivelmente menor a
   cada 3s (sprites de "derretendo" 1/2/3), até sumir de vez - se o Kirby demorar demais em cima
   de uma, ela some embaixo dele
 - Levar um tiro custa uma vida e deixa o Kirby atordoado por 2s; cair da tela também custa uma
   vida (e ele sempre renasce em cima de uma plataforma já gerada, nunca no vazio); ao perder as
   5 vidas, o jogo vai pra tela de game over (botão 1 tenta de novo, botão 0 sai). As vidas do
   Kirby aparecem tanto nos LEDs quanto em pips vermelhos no canto inferior direito da tela
-- O vilão tem 10 vidas, mostradas como ícones reduzidos do próprio sprite no topo da tela; ao
+- O vilão tem 5 vidas, mostradas como ícones reduzidos do próprio sprite no topo da tela; ao
   perdê-las todas, ele explode, some pelo resto da partida e o Kirby comemora
-- A pontuação vai até 10000 (exibida nos displays de 7 segmentos, usando os 4 dígitos); ao
+- A pontuação vai até 2000 (exibida nos displays de 7 segmentos, usando os 4 dígitos); ao
   alcançar o topo, o Kirby também comemora com o sprite de campeão
+
+### Recordes persistentes
+
+Além da pontuação da partida atual, o jogo guarda três recordes pessoais num arquivo
+(`recordes.dat`, ao lado do executável), recarregados a cada execução: a maior pontuação já
+alcançada, a menor pontuação em que o vilão já foi derrotado, e o menor tempo (em segundos) até
+vencer o jogo. Funciona no `SDL_SIM` e na DE1-SoC real (ambos têm sistema de arquivos); no
+CPUlator, sem disco persistente, a leitura falha silenciosamente e o jogo segue sem recordes
+salvos entre execuções. Os recordes aparecem no título da janela (modo SDL) e desenhados na tela
+nas telas de game over/vitória, cada um com um ícone indicando a que ele se refere.
 
 ## Laço principal do jogo
 
@@ -193,6 +206,27 @@ while (programa_rodando) {
 }
 ```
 
+## Relatório, apresentação e roteiro
+
+A pasta [`relatorio/`](relatorio/) reúne a documentação final do trabalho:
+
+- [`relatorio.tex`](relatorio/relatorio.tex) / `ISE___Kirby_s_Sky_Adventures.pdf` — relatório
+  completo, com a modelagem UML (diagrama de classes, máquina de estados do jogo e do vilão,
+  diagrama de sequência do parry), o pipeline gráfico, o sistema de pontuação/recordes e as
+  principais dificuldades encontradas.
+- `Pula_Plataformas_Apresentacao.pptx` — slides para apresentação oral.
+- `Roteiro_Apresentacao_Pula_Plataformas.docx` — roteiro de fala dividido entre os dois autores.
+
+## Demonstração
+
+| Pulo (física + troca de sprite subindo/caindo) | Tela de início |
+|:---:|:---:|
+| ![Kirby pulando para a direita](kirby_pulando_direita_transparente.gif) | ![Animação da tela de início](kirby_tela_inicio_transparente.gif) |
+
+**Vilão, parry e reflexo do projétil:**
+
+![Vilão atira, Kirby reflete com parry, vilão explode e Kirby comemora](kirby_vs_vilao_transparente.gif)
+
 ## Próximos passos
 
 Itens previstos pelo enunciado do trabalho ainda pendentes nesta versão:
@@ -204,12 +238,11 @@ Itens previstos pelo enunciado do trabalho ainda pendentes nesta versão:
   níveis distintos (hoje só o céu de fundo muda de nível), interrupções, acelerômetro,
   joystick, segundo dispositivo de entrada, configuração de jogo (dificuldade/velocidade
   ajustável)
-- Modelagem UML do jogo
-- Documentação final com resumo da implementação e comentários por função
 
 Já implementado (itens que constavam aqui antes): sprites de personagem/cenário/vilão,
 obstáculos destrutíveis (vilão, com parry) e nocivos (projétil), inimigo ativo que persegue
-via projéteis mirados, plataformas suspensas com gaps, e double buffering.
+via projéteis mirados, plataformas suspensas com gaps, double buffering, recordes persistentes,
+modelagem UML do jogo e documentação final com resumo da implementação (ver seção acima).
 
 ## Enunciado do trabalho
 

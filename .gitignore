@@ -1,3 +1,10 @@
 
 __pycache__/
 recordes.dat
+
+# scripts auxiliares usados só para gerar assets (gifs/slides/roteiro) -
+# os resultados finais é que sao versionados, nao as ferramentas de geracao
+gerar_gif_*.py
+relatorio/gerar_*.py
+relatorio/figuras_uml/
+kirby_pulando_direita_fundo_branco.gif

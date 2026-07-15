@@ -16,6 +16,7 @@
 \usepackage{subcaption}
 \usepackage{listings}
 \usepackage{tikz}
+\usetikzlibrary{calc,arrows.meta}
 \usetikzlibrary{shapes.multipart,arrows.meta,positioning,fit,shapes.geometric}
 \usepackage{hyperref}
 \hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
@@ -43,8 +44,8 @@
 \title{\textbf{Pula Plataformas}\\[4pt]
 \large Relatório de Implementação\\
 Trabalho Final --- Introdução aos Sistemas Embarcados}
-\author{Pedro Araujo Cordeiro Viana --- matrícula 202067452 \\
-Bruno Suxberger Valadares Araújo --- matrícula 231012728}
+\author{Bruno Suxberger Valadares Araújo --- matrícula 231012728 \\
+Pedro Araujo Cordeiro Viana --- matrícula 202067452}
 \date{\today}
 
 \begin{document}
@@ -103,7 +104,7 @@ por \emph{flags} de compilação, sem alterar a lógica do jogo:
     comum (Windows, via MSYS2), sem precisar da placa nem do simulador.
 \end{itemize}
 
-\subsection{Histórico: do CPUlator ao MSYS2}
+\subsection{Simulação do CPUlator ao MSYS2}
 
 No início do desenvolvimento, o projeto foi testado exclusivamente no
 \textbf{CPUlator} (\url{https://cpulator.01xz.net}), um simulador da DE1-SoC
@@ -131,7 +132,7 @@ C que roda na placa.
 
 O arquivo \code{pula\_plat.c} usa \code{\#include} para os \emph{headers} de
 sprite (ver Seção~\ref{sec:graficos}), o que o CPUlator não aceita. Por isso,
-o repositório mantém um script auxiliar, \code{tools/build\_cpulator.py}, que
+o repositório do projeto mantém um script auxiliar, \code{tools/build\_cpulator.py}, que
 gera uma versão de \code{pula\_plat.c} com todos os \code{\#include} locais
 ``inlinados'' em um único arquivo (\code{pula\_plat\_cpulator.c}), apenas para
 os casos em que ainda seja necessário validar no simulador. Esse arquivo é
@@ -158,9 +159,7 @@ gcc -DSDL_SIM pula_plat.c -o jogo.exe -lSDL2 -lm
 \begin{lstlisting}[language=bash,numbers=none]
 ./jogo.exe
 \end{lstlisting}
-    Para rodar fora desse terminal (por exemplo, dando duplo clique no
-    Explorer), basta copiar \code{SDL2.dll} para a mesma pasta do
-    executável.
+    Para rodar fora desse terminal, basta copiar \code{SDL2.dll} para a mesma pasta do executável.
 \end{enumerate}
 
 Os controles no modo SDL são o teclado: setas ou WASD para movimento
@@ -174,6 +173,37 @@ mostrador de 7 segmentos nem LEDs de verdade nesse modo.
 gcc -DDE1_SOC pula_plat.c -o jogo -lm
 sudo ./jogo    # precisa de root para acessar /dev/mem
 \end{lstlisting}
+
+\subsection{Execução na placa DE1-SoC}
+
+Para validar o funcionamento fora do CPUlator, o jogo também foi executado
+diretamente na placa DE1-SoC real, com o VGA da placa exibindo a tela do
+jogo e os LEDs/HEX refletindo o estado das vidas e da pontuação (ver
+\texttt{atualiza\_leds} e \texttt{atualiza\_display}). A Figura~\ref{fig:de1soc-fotos}
+mostra a placa em funcionamento em diferentes momentos da partida.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{figuras/de1soc_tela_inicio.png}
+    \caption{Tela de início}
+    \label{fig:de1soc-inicio}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{figuras/de1soc.jpeg}
+    \caption{LEDs e display de 7 segmentos mostrando vidas/pontos}
+    \label{fig:de1soc-fotos}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.4\textwidth]{figuras/jogo_rodando.jpeg}
+    \caption{Partida em andamento}
+    \label{fig:de1soc-jogando}
+\end{figure}
+
+
 
 % =============================================================================
 \section{Funcionamento do jogo}
@@ -279,7 +309,6 @@ estados interno do vilão é discutido junto com a Seção~\ref{sec:uml}.
         LEDs & Exibição do número de vidas restantes & Implementado \\
         Chaves (SW) & Chave 0 = pulo & Implementado \\
         Botões (KEY) & Botões 0/1 = movimento horizontal; botão 2 = \emph{parry} (reflete o projétil); também usados nas telas de início/\emph{game over} & Implementado \\
-        Teclado USB / Mouse / Acelerômetro / \mbox{PS2 Joystick} & --- & Não implementado \\
         \bottomrule
     \end{tabular}
     \caption{Periféricos de entrada/saída da DE1-SoC utilizados pelo jogo.}
@@ -329,7 +358,7 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
 
 \begin{figure}[H]
     \centering
-    \resizebox{\textwidth}{!}{%
+    \resizebox{0.75\textwidth}{!}{%
     \begin{tikzpicture}[
         umlclass/.style={
             rectangle split, rectangle split parts=3, draw=black, thick,
@@ -339,7 +368,7 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
         }
     ]
 
-    \node[umlclass] (jogo) at (7,9) {
+    \node[umlclass] (jogo) at (2,22) {
         \centering\textbf{Jogo (main)}
         \nodepart{second}
         \begin{tabular}[t]{@{}l@{}}
@@ -356,42 +385,24 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
         \end{tabular}
     };
 
-    \node[umlclass] (player) at (0,4.3) {
-        \centering\textbf{Player (Kirby)}
+    \node[umlclass] (recordes) at (10,17.3) {
+        \centering\textbf{Recordes}
         \nodepart{second}
         \begin{tabular}[t]{@{}l@{}}
-        x, y: int (24.8 fixo)\\
-        vy: int\\
-        w, h: int\\
-        vidas: int\\
-        pontos: int
+        maior\_pontuacao: int\\
+        pontos\_min\_chefe: int\\
+        tempo\_min\_vitoria\_frames: int
         \end{tabular}
         \nodepart{third}
         \begin{tabular}[t]{@{}l@{}}
-        atualiza\_estado()\\
-        desenha\_kirby()\\
-        renderiza\_cena()
+        carrega\_recordes()\\
+        salva\_recordes()\\
+        registra\_recorde\_*()\\
+        desenha\_recordes()
         \end{tabular}
     };
 
-    \node[umlclass] (plataforma) at (5.2,4.3) {
-        \centering\textbf{Plataforma}
-        \nodepart{second}
-        \begin{tabular}[t]{@{}l@{}}
-        x, y, w, h: int\\
-        melt\_timer: int
-        \end{tabular}
-        \nodepart{third}
-        \begin{tabular}[t]{@{}l@{}}
-        gera\_plataforma\_seguinte()\\
-        atualiza\_derretimento()\\
-        plataforma\_visual()\\
-        recicla\_plataformas()\\
-        garante\_plataformas\_acima()
-        \end{tabular}
-    };
-
-    \node[umlclass] (vilao) at (10.4,4.3) {
+    \node[umlclass] (vilao) at (2,17) {
         \centering\textbf{Vilao}
         \nodepart{second}
         \begin{tabular}[t]{@{}l@{}}
@@ -410,7 +421,7 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
         \end{tabular}
     };
 
-    \node[umlclass] (projetil) at (15.6,4.3) {
+    \node[umlclass] (projetil) at (2,11) {
         \centering\textbf{Projetil}
         \nodepart{second}
         \begin{tabular}[t]{@{}l@{}}
@@ -426,33 +437,52 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
         \end{tabular}
     };
 
-    \node[umlclass] (recordes) at (7,-0.3) {
-        \centering\textbf{Recordes}
+    \node[umlclass] (player) at (2,5.3) {
+        \centering\textbf{Player (Kirby)}
         \nodepart{second}
         \begin{tabular}[t]{@{}l@{}}
-        maior\_pontuacao: int\\
-        pontos\_min\_chefe: int\\
-        tempo\_min\_vitoria\_frames: int
+        x, y: int (24.8 fixo)\\
+        vy: int\\
+        w, h: int\\
+        vidas: int\\
+        pontos: int
         \end{tabular}
         \nodepart{third}
         \begin{tabular}[t]{@{}l@{}}
-        carrega\_recordes()\\
-        salva\_recordes()\\
-        registra\_recorde\_*()\\
-        desenha\_recordes()
+        atualiza\_estado()\\
+        desenha\_kirby()\\
+        renderiza\_cena()
         \end{tabular}
     };
 
-    % associações (agregação: losango vazio do lado do "todo")
-    \draw[-{Diamond[open]}] (jogo.west) .. controls +(-2,-1) and +(0,2) .. node[pos=0.55,left,font=\tiny]{1} (player.north);
-    \draw[-{Diamond[open]}] (jogo.south) -- node[pos=0.6,right,font=\tiny]{6} (plataforma.north);
-    \draw[-{Diamond[open]}] (jogo.east) .. controls +(1,-1) and +(-1,2) .. node[pos=0.55,right,font=\tiny]{1} (vilao.north);
-    \draw[-{Diamond[open]}] (jogo.east) .. controls +(2,-1) and +(0,2) .. node[pos=0.6,right,font=\tiny]{0..1} (projetil.north);
-    \draw[-{Diamond[open]}] (jogo.south) .. controls +(0,-2) and +(0,2) .. node[pos=0.6,left,font=\tiny]{1} (recordes.north);
+    \node[umlclass] (plataforma) at (2,-1.5) {
+        \centering\textbf{Plataforma}
+        \nodepart{second}
+        \begin{tabular}[t]{@{}l@{}}
+        x, y, w, h: int\\
+        melt\_timer: int
+        \end{tabular}
+        \nodepart{third}
+        \begin{tabular}[t]{@{}l@{}}
+        gera\_plataforma\_seguinte()\\
+        atualiza\_derretimento()\\
+        plataforma\_visual()\\
+        recicla\_plataformas()\\
+        garante\_plataformas\_acima()
+        \end{tabular}
+    };
 
-    \draw[-] (player.east) -- (plataforma.west) node[midway,above,font=\tiny]{colide com};
-    \draw[->,dashed] (vilao.south) -- node[midway,right,font=\tiny]{cria} (projetil.south west);
-    \draw[-] (projetil.west) -- node[midway,above,font=\tiny]{colide / reflete} (player.east);
+    % associações de agregação (losango vazio do lado do "todo" = Jogo)
+    \draw[-{Diamond[open]}] (jogo.south) -- node[pos=0.5,right,font=\tiny]{1} (vilao.north);
+    \draw[-{Diamond[open]}] (jogo.east) .. controls +(2,-1) and +(0,2) .. node[pos=0.6,above,font=\tiny]{1} (recordes.north);
+    \draw[-{Diamond[open]}] (jogo.west) .. controls +(-3,-2) and +(-3,4) .. node[pos=0.5,left,font=\tiny]{0..1} (projetil.west);
+    \draw[-{Diamond[open]}] (jogo.west) .. controls +(-5,-4) and +(-5,6) .. node[pos=0.5,left,font=\tiny]{1} (player.west);
+    \draw[-{Diamond[open]}] (jogo.west) .. controls +(-7,-8) and +(-7,8) .. node[pos=0.5,left,font=\tiny]{6} (plataforma.west);
+
+    % demais associações
+    \draw[->,dashed] (vilao.south) -- node[midway,right,font=\tiny]{cria} node[pos=0.05,left,font=\tiny]{0..1} (projetil.north);
+    \draw[-] (projetil.south) -- node[midway,right,font=\tiny]{colide / reflete} node[pos=0.05,left,font=\tiny]{0..1} node[pos=0.95,left,font=\tiny]{1} (player.north);
+    \draw[-] (player.south) -- node[midway,right,font=\tiny]{colide com} node[pos=0.05,left,font=\tiny]{1} node[pos=0.95,left,font=\tiny]{6} (plataforma.north);
 
     \end{tikzpicture}%
     }
@@ -462,6 +492,7 @@ notação de Wolf (retângulo dividido em nome / atributos / operações).
     e as funções de nível global do arquivo.}
     \label{fig:classes}
 \end{figure}
+
 
 \subsection{Diagrama de estados do vilão}
 
@@ -500,24 +531,70 @@ jogador reflete de volta o projétil do vilão segurando o \emph{parry} no
 instante certo, e o projétil refletido pode, por sua vez, acertar o vilão.
 
 \begin{figure}[H]
-    \centering
-    \begin{tikzpicture}[>=Stealth, font=\small]
-        % atores
-        \foreach \x/\nome/\txt in {0/jogador/{:Jogador}, 4/kirby/{:Kirby}, 8/projetil/{:Projétil}, 12/vilao/{:Vilão}} {
-            \node[draw, minimum width=2.2cm, align=center] (\nome) at (\x,0) {\txt};
-            \draw[dashed] (\nome.south) -- ++(0,-8);
-        }
+\centering
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    every node/.style={font=\small}
+]
 
-        \draw[->] (jogador.south) ++(0,-0.8) -- node[above,font=\scriptsize]{segura parry} ($(kirby.south)+(0,-0.8)$);
-        \draw[->] ($(projetil.south)+(0,-1.8)$) -- node[above,font=\scriptsize]{colide (indo)} ($(kirby.south)+(0,-1.8)$);
-        \draw[->] ($(kirby.south)+(0,-2.8)$) -- node[above,font=\scriptsize]{reflete (refletido=1)} ($(projetil.south)+(0,-2.8)$);
-        \node[font=\scriptsize] at ($(projetil.south)+(1.4,-4.3)$) {(move em linha reta)};
-        \draw[->] ($(projetil.south)+(0,-5.6)$) -- node[above,font=\scriptsize]{colide (voltando)} ($(vilao.south)+(0,-5.6)$);
-        \draw[->] ($(vilao.south)+(0,-6.8)$) to[out=200,in=160,looseness=6] node[left,font=\scriptsize]{vidas--} ($(vilao.south)+(0,-6.8)$);
-    \end{tikzpicture}
-    \caption{Diagrama de sequência simplificado da mecânica de \emph{parry}
-    (função \code{atualiza\_projetil()}).}
-    \label{fig:sequencia}
+%------------------------------------------------
+% Atores
+%------------------------------------------------
+\foreach \x/\nome/\txt in {
+0/jogador/{:Jogador},
+4/kirby/{:Kirby},
+8/projetil/{:Projétil},
+12/vilao/{:Vilão}}
+{
+    \node[draw,minimum width=2.4cm,minimum height=0.8cm] (\nome) at (\x,0) {\txt};
+    \draw[dashed] (\nome.south) -- ++(0,-9);
+}
+
+%------------------------------------------------
+% Mensagens
+%------------------------------------------------
+
+% jogador -> kirby
+\draw[->]
+($(jogador.south)+(0,-1.0)$) --
+node[above]{\scriptsize segura parry}
+($(kirby.south)+(0,-1.0)$);
+
+% projetil -> kirby
+\draw[->]
+($(projetil.south)+(0,-2.2)$) --
+node[above]{\scriptsize colide (indo)}
+($(kirby.south)+(0,-2.2)$);
+
+% kirby -> projetil
+\draw[->]
+($(kirby.south)+(0,-3.5)$) --
+node[above]{\scriptsize reflete (refletido = 1)}
+($(projetil.south)+(0,-3.5)$);
+
+% movimento
+\node at ($(projetil.south)+(1.8,-5.0)$)
+{\scriptsize move em linha reta};
+
+% projetil -> vilao
+\draw[->]
+($(projetil.south)+(0,-6.3)$) --
+node[above]{\scriptsize colide (voltando)}
+($(vilao.south)+(0,-6.3)$);
+
+% autochamada
+\draw[->]
+($(vilao.south)+(0,-7.6)$)
+to[out=210,in=150,looseness=8]
+node[left]{\scriptsize vidas--}
+($(vilao.south)+(0,-7.6)$);
+
+\end{tikzpicture}
+
+\caption{Diagrama de sequência simplificado da mecânica de \emph{parry}
+(função \code{atualiza\_projetil()}).}
+\label{fig:sequencia}
 \end{figure}
 
 \subsection{Principais módulos do arquivo}
@@ -613,7 +690,7 @@ em seus diferentes estágios de derretimento.
         \centering \includegraphics[height=1.8cm]{figuras/vilao_atingido.png}
         \caption{Atingido}
     \end{subfigure}
-    \begin{subfigure}{0.14\textwidth}
+    \begin{subfigure}{0.2\textwidth}
         \centering \includegraphics[height=1.8cm]{figuras/vilao_explodido.png}
         \caption{Explodindo}
     \end{subfigure}
